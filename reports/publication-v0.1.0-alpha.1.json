@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "repository": "Kenneth2Y/xiaomi-polaris-mix2s-linux-pocket-pc",
+  "tag": "v0.1.0-alpha.1",
+  "release_url": "https://github.com/Kenneth2Y/xiaomi-polaris-mix2s-linux-pocket-pc/releases/tag/v0.1.0-alpha.1",
+  "published_at": "2026-11-05T06:43:46Z",
+  "draft": false,
+  "prerelease": true,
+  "tag_commit": "1990e8e8d77836ad73f0795f625fb6bcf3bd0046",
+  "imported_source_commit": "ebd71a2b1e77b74e733e78cff0da5e04774e64f8",
+  "assets_verified": 10,
+  "assets": [
+    {
+      "name": "boot-polaris-test06.img",
+      "bytes": 29515776,
+      "sha256": "e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce",
+      "state": "uploaded"
+    },
+    {
+      "name": "initramfs-polaris-test06.cpio.zst",
+      "bytes": 13350198,
+      "sha256": "c60923c19a12e1b32cde5d9d1ffe2ab124f68a65a89dd4bcfd9b98f4fdda3744",
+      "state": "uploaded"
+    },
+    {
+      "name": "linux-sdm845-7.1-rc1-r0.tar.gz",
+      "bytes": 262515568,
+      "sha256": "4389f4ae6f5b80174a4b2d2da93ab5afc1d3922db215ebabf7c01436494eb9f2",
+      "state": "uploaded"
+    },
+    {
+      "name": "modules-polaris-test06.tar",
+      "bytes": 25968640,
+      "sha256": "eac4ccbf674c6ffe88aac49d403d2492cc3fb32740dd19d17f4cae580bbdbeae",
+      "state": "uploaded"
+    },
+    {
+      "name": "polaris-source-v0.1.0-alpha.1.tar.gz",
+      "bytes": 288487,
+      "sha256": "becaf001fabeee8a4dbf07eebc990f49af23a874733472d01369361c89ea8c78",
+      "state": "uploaded"
+    },
+    {
+      "name": "polaris-test06-build-metadata.tar.gz",
+      "bytes": 340206,
+      "sha256": "7a4c189660c9cd3d4cfe9c4e955ec135e6a1c49eb2586d1c9b232f8247d58030",
+      "state": "uploaded"
+    },
+    {
+      "name": "release-manifest.json",
+      "bytes": 2553,
+      "sha256": "79f17fbdae80e153024ebfdfbda36a24555df1c3ab13be3ca568dc8750b8c5ba",
+      "state": "uploaded"
+    },
+    {
+      "name": "sdm845-xiaomi-polaris-test06.dtb",
+      "bytes": 109781,
+      "sha256": "74cd2c33d6b659041b4a91d9b8d719b64c1cd830d7b97c22879e75426de517df",
+      "state": "uploaded"
+    },
+    {
+      "name": "SHA256SUMS",
+      "bytes": 865,
+      "sha256": "6186903948bf13f8c8162cccffcd24da424000c455ef8b1a5315ce30607e4bbd",
+      "state": "uploaded"
+    },
+    {
+      "name": "vmlinuz-polaris-test06.gz",
+      "bytes": 16046696,
+      "sha256": "d4fd9cc4f12ccadc74a651950a5d8f8081557b0466bf2971d56f3b11bccffeaa",
+      "state": "uploaded"
+    }
+  ],
+  "ci": {
+    "commit": "1990e8e8d77836ad73f0795f625fb6bcf3bd0046",
+    "conclusion": "success",
+    "url": "https://github.com/Kenneth2Y/xiaomi-polaris-mix2s-linux-pocket-pc/actions/runs/41982047920"
+  },
+  "validation": {
+    "public_github_asset_digest_matches_local": true,
+    "tag_matches_published_commit": true,
+    "public_AGENTS_matches_local_git_blob": true,
+    "local_worktree_clean_at_publication": true,
+    "device_modified_during_archiving": false,
+    "full_kernel_rebuilt_during_import": false
+  },
+  "note": "此记录在发布后提交到main；既有tag和二进制保持不变。资产散列与发布时的GitHub公开API核对，后续状态需要重新检测。"
+}

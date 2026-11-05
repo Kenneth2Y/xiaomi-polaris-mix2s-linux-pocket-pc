@@ -2,7 +2,7 @@
 
 把 Xiaomi MIX 2S（polaris / Snapdragon 845）逐步维护成可实际使用的 ARM64 Linux 掌上电脑，并保留能解释、复现、升级和迁移的工程方案。
 
-当前公开基线：**test06 / v0.1.0-alpha.1**。这是实验性移植成果，不是功能完整的日用发行版。最后一轮实机验收日期为 **2026-11-05**；文档记录的是该轮证据，不代替对当前设备的检测。
+当前公开基线：**[test06 / v0.1.0-alpha.1](https://github.com/Kenneth2Y/xiaomi-polaris-mix2s-linux-pocket-pc/releases/tag/v0.1.0-alpha.1)**。这是实验性移植成果，不是功能完整的日用发行版。最后一轮实机验收日期为 **2026-11-05**；文档记录的是该轮证据，不代替对当前设备的检测。
 
 ## 已验证到哪里
 
@@ -23,6 +23,8 @@ e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce
 ```
 
 完整事实和测试证据见 [当前状态](docs/STATUS.md)、[测试索引](docs/EVIDENCE.md)。
+
+首版已公开发布10项资产，远端大小和SHA256全部与本地一致，标签提交已核对，源码CI通过；结果保存在[发布验收记录](reports/publication-v0.1.0-alpha.1.json)。这次归档没有操作手机或覆盖原始备份。
 
 ## 三层保存
 
