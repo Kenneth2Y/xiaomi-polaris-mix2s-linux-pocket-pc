@@ -1,0 +1,57 @@
+{
+  "scope": "全新固定上游包＋公开series＋原工具链olddefconfig/DTB编译；未全量重编内核",
+  "all_match": true,
+  "inputs": [
+    {
+      "path": "drivers/gpu/drm/panel/panel-novatek-nt35596s.c",
+      "matches_historical": true,
+      "sha256": "a3849c5fb7f9ee79dfc188ead9367ca706d892c1c0eca377deadc35fa14cd383"
+    },
+    {
+      "path": "drivers/regulator/qcom_usb_vbus-regulator.c",
+      "matches_historical": true,
+      "sha256": "49fc490eebe6f90af79209069650774c1af9ca081e4353c14378167297791035"
+    },
+    {
+      "path": "drivers/power/supply/qcom_smbx.c",
+      "matches_historical": true,
+      "sha256": "8a12949b8d459b415fb2d21f43817de692718de1f3db7734823aaddfb30cc5a2"
+    },
+    {
+      "path": "drivers/power/supply/pmi8998_fg.c",
+      "matches_historical": true,
+      "sha256": "1be51cfc2f8ea0351067126f0b9618654a323cf896ba715aae48d0ca7cd16c45"
+    },
+    {
+      "path": "drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c",
+      "matches_historical": true,
+      "sha256": "9aa9a029e1a597032ac5232246aef8762eefa4d6877d42ee502f7aba50beacb4"
+    },
+    {
+      "path": "drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.c",
+      "matches_historical": true,
+      "sha256": "89b993ff8a07e510240bb3987a5a3b3191e25cf3dc7bf81c9f5af450dfbc5b26"
+    },
+    {
+      "path": "arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts",
+      "matches_historical": true,
+      "sha256": "ddb017a4dbd9906c97bdc3f7292b72ab85417d5b174f72e887b5c0f98e353597"
+    },
+    {
+      "path": ".config",
+      "matches_historical": true,
+      "sha256": "7e0bcee58adf6db586aaf8624cfee0884bf58e9fe2837ccd33216ad36b0d4bdc"
+    },
+    {
+      "path": "kernel/time/timeconst.bc",
+      "matches_historical": true,
+      "sha256": "f27a270da894e3019711dda7e44730537db01e94f4838ad56a5cfe6a9ea88000"
+    },
+    {
+      "path": "arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dtb",
+      "matches_historical": true,
+      "sha256": "74cd2c33d6b659041b4a91d9b8d719b64c1cd830d7b97c22879e75426de517df"
+    }
+  ],
+  "seed_config_note": "配方seed保留旧编译器探测字段；olddefconfig在23.1.4工具链规范化后与历史有效配置一致。"
+}

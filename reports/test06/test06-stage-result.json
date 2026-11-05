@@ -1,0 +1,31 @@
+{
+  "current_kernel": "7.1.0-rc1-sdm845-polaris-test06",
+  "current_boot_sha256": "e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce",
+  "gui": "Phosh/Phoc/Phrog, Stevia, Foot; Web/Files and CJK installed and launched",
+  "user_gui_acceptance": true,
+  "boot_cycles_verified": 2,
+  "usb_host_auto_boot": true,
+  "both_typec_orientations": true,
+  "mouse_relative_events": 3427,
+  "mouse_button_pairs": 14,
+  "keyboard_pairs": 11,
+  "input_drops": 0,
+  "charger_input_limit_ua": 1000000,
+  "battery_charge_limit_ua": 750000,
+  "otg_source_limit_ua": 500000,
+  "final_input_current_ua": 722905,
+  "external_meter_user_a": "0.8-0.82",
+  "final_state": "device/sink, OTG off, Charging, Wi-Fi and GUI active",
+  "automatic_boot_flashing_disabled": true,
+  "original_boot_preserved": true,
+  "remaining_scope": [
+    "Chinese input method",
+    "5GHz connection",
+    "audio",
+    "cellular",
+    "Bluetooth",
+    "suspend/wake",
+    "long-term power/thermal/capacity validation",
+    "USB PC/NCM dynamic rebind"
+  ]
+}

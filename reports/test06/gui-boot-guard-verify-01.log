@@ -1,0 +1,96 @@
+Check supported mkinitfs bypass in the live package tool:
+2026/11/04 23:52:40 KERNEL_INSTALL_BYPASS set to '1'. Skipping mkinitfs.
+
+Effective automatic flashing setting:
+false
+
+Actual boot prefix still test05:
+ac2d4496089a3f7658b8cbdae6b6b364ffe81855b42d4434bf3943198eb1cb95  -
+
+Current GUI sessions/processes:
+SESSION   UID USER   SEAT  LEADER CLASS         TTY  IDLE SINCE  
+      1 10000 user   -     983    manager       -    no   -      
+      2   109 greetd -     11305  manager-early -    no   -      
+     c3 10000 user   -     8538   user          -    no   -      
+     c5   109 greetd seat0 11290  greeter       tty7 yes  48s ago
+
+4 sessions listed.
+11288 root     greetd           greetd -c /etc/phrog/greetd-config.toml
+11333 greetd   phoc             phoc -S -C /etc/phrog/phoc.ini -E gnome-session --session=phrog
+11350 greetd   gnome-session-i  /usr/libexec/gnome-session-init-worker phrog
+11359 greetd   gnome-session-c  /usr/libexec/gnome-session-ctl --monitor
+11362 greetd   gnome-session-s  /usr/libexec/gnome-session-service --session=phrog
+11368 greetd   phrog            phrog
+11418 greetd   at-spi2-registr  /usr/libexec/at-spi2-registryd --use-gnome-session
+
+Recent compositor and greeter diagnostics:
+Nov 04 23:50:50 xiaomi-polaris gnome-session-service[11362]: App org.gnome.SettingsDaemon.A11ySettings.desktop sets X-GNOME-Autostart-Phase, but gnome-session no longer manages session services
+Nov 04 23:50:50 xiaomi-polaris gnome-session-service[11362]: App at-spi-dbus-bus.desktop sets X-GNOME-Autostart-Phase, but gnome-session no longer manages session services
+Nov 04 23:50:50 xiaomi-polaris gnome-session-service[11362]: App org.gnome.SettingsDaemon.UsbProtection.desktop sets X-GNOME-Autostart-Phase, but gnome-session no longer manages session services
+Nov 04 23:50:50 xiaomi-polaris gnome-session-service[11362]: App org.gnome.SettingsDaemon.Keyboard.desktop sets X-GNOME-Autostart-Phase, but gnome-session no longer manages session services
+Nov 04 23:50:50 xiaomi-polaris gnome-session-service[11362]: App gnome-keyring-secrets.desktop sets X-GNOME-Autostart-Phase, but gnome-session no longer manages session services
+Nov 04 23:50:50 xiaomi-polaris gnome-session-service[11362]: App org.gnome.SettingsDaemon.Sound.desktop sets X-GNOME-Autostart-Phase, but gnome-session no longer manages session services
+Nov 04 23:50:50 xiaomi-polaris gnome-session-service[11362]: App org.gnome.SettingsDaemon.XSettings.desktop sets X-GNOME-Autostart-Phase, but gnome-session no longer manages session services
+Nov 04 23:50:50 xiaomi-polaris gnome-session-service[11362]: App org.gnome.SettingsDaemon.Color.desktop sets X-GNOME-Autostart-Phase, but gnome-session no longer manages session services
+Nov 04 23:50:50 xiaomi-polaris gnome-session-service[11362]: App org.gnome.SettingsDaemon.Sharing.desktop sets X-GNOME-Autostart-Phase, but gnome-session no longer manages session services
+Nov 04 23:50:50 xiaomi-polaris systemd[11305]: Started GNOME Session Manager (session: phrog).
+Nov 04 23:50:50 xiaomi-polaris systemd[11305]: Started Phrog, a greeter for mobile phones.
+Nov 04 23:50:50 xiaomi-polaris systemd[11305]: Reached target Phrog Greeter.
+Nov 04 23:50:50 xiaomi-polaris systemd[11305]: Reached target GNOME Session (session: phrog).
+Nov 04 23:50:50 xiaomi-polaris gnome-session-service[11362]: Entering running state
+Nov 04 23:50:50 xiaomi-polaris systemd[11305]: Started Application launched by gnome-session-service.
+Nov 04 23:50:50 xiaomi-polaris phosh-osk-stevia[11370]: Settings schema 'mobi.phosh.osk' is not installed
+Nov 04 23:50:50 xiaomi-polaris (coredump-worker)[11386]: Process 11370 (phosh-osk-stevi) of user 109 terminated abnormally with signal 6/ABRT, processing...
+Nov 04 23:50:50 xiaomi-polaris (coredump-worker)[11386]: Process 11370 (phosh-osk-stevi) of user 109 dumped core.
+Nov 04 23:50:50 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Main process exited, code=dumped, status=6/ABRT
+Nov 04 23:50:50 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Failed with result 'core-dump'.
+Nov 04 23:50:50 xiaomi-polaris systemd[11305]: Failed to start Stevia, a user friendly on screen keyboard.
+Nov 04 23:50:50 xiaomi-polaris systemd[11305]: Reached target Phosh On Screen Keyboard.
+Nov 04 23:50:50 xiaomi-polaris pulseaudio[11428]: [pulseaudio] authkey.c: Failed to open cookie file '/var/lib/greetd/.config/pulse/cookie': No such file or directory
+Nov 04 23:50:50 xiaomi-polaris pulseaudio[11428]: [pulseaudio] authkey.c: Failed to load authentication key '/var/lib/greetd/.config/pulse/cookie': No such file or directory
+Nov 04 23:50:50 xiaomi-polaris pulseaudio[11428]: [pulseaudio] authkey.c: Failed to open cookie file '/var/lib/greetd/.pulse-cookie': No such file or directory
+Nov 04 23:50:50 xiaomi-polaris pulseaudio[11428]: [pulseaudio] authkey.c: Failed to load authentication key '/var/lib/greetd/.pulse-cookie': No such file or directory
+Nov 04 23:50:50 xiaomi-polaris libcanberra-login-sound.desktop[11377]: Failed to play sound: File or data not found
+Nov 04 23:50:50 xiaomi-polaris gsd-power[11372]: Error setting property 'PowerSaveMode' on interface org.gnome.Mutter.DisplayConfig: Cannot invoke method; proxy is for the well-known name org.gnome.Mutter.DisplayConfig without an owner, and proxy was constructed with the G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START flag (g-io-error-quark, 0)
+Nov 04 23:50:51 xiaomi-polaris phrog[11368]: Failed to get handle position
+Nov 04 23:50:51 xiaomi-polaris phrog[11368]: Disabling emergency calls
+Nov 04 23:50:51 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Scheduled restart job, restart counter is at 1.
+Nov 04 23:50:51 xiaomi-polaris phosh-osk-stevia[11672]: Settings schema 'mobi.phosh.osk' is not installed
+Nov 04 23:50:51 xiaomi-polaris (coredump-worker)[11710]: Process 11672 (phosh-osk-stevi) of user 109 terminated abnormally with signal 6/ABRT, processing...
+Nov 04 23:50:51 xiaomi-polaris (coredump-worker)[11710]: Process 11672 (phosh-osk-stevi) of user 109 dumped core.
+Nov 04 23:50:51 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Main process exited, code=dumped, status=6/ABRT
+Nov 04 23:50:51 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Failed with result 'core-dump'.
+Nov 04 23:50:51 xiaomi-polaris systemd[11305]: Failed to start Stevia, a user friendly on screen keyboard.
+Nov 04 23:50:52 xiaomi-polaris phrog[11368]: Unable to toggle OSK: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable
+Nov 04 23:50:52 xiaomi-polaris accounts-daemon[11949]: couldn't list homed users: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable
+Nov 04 23:50:52 xiaomi-polaris phrog[11368]: gvc_mixer_stream_get_port: assertion 'stream->priv->ports != NULL' failed
+Nov 04 23:50:52 xiaomi-polaris phrog[11368]: gvc_mixer_stream_get_port: assertion 'stream->priv->ports != NULL' failed
+Nov 04 23:50:52 xiaomi-polaris NetworkManager[671]: <info>  [1793807452.4030] agent-manager: agent[0cbc6be257a5600e,:1.1066/mobi.phosh.Shell.NetworkAgent/109]: agent registered
+Nov 04 23:50:52 xiaomi-polaris phrog[11368]: Failed to load background image: Error opening file /usr/share/backgrounds/gnome/blobs-d.svg: No such file or directory
+Nov 04 23:50:52 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Scheduled restart job, restart counter is at 2.
+Nov 04 23:50:52 xiaomi-polaris phosh-osk-stevia[12269]: Settings schema 'mobi.phosh.osk' is not installed
+Nov 04 23:50:52 xiaomi-polaris (coredump-worker)[12279]: Process 12269 (phosh-osk-stevi) of user 109 terminated abnormally with signal 6/ABRT, processing...
+Nov 04 23:50:52 xiaomi-polaris (coredump-worker)[12279]: Process 12269 (phosh-osk-stevi) of user 109 dumped core.
+Nov 04 23:50:52 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Main process exited, code=dumped, status=6/ABRT
+Nov 04 23:50:52 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Failed with result 'core-dump'.
+Nov 04 23:50:52 xiaomi-polaris systemd[11305]: Failed to start Stevia, a user friendly on screen keyboard.
+Nov 04 23:50:52 xiaomi-polaris phrog[11368]: Failed to get emergency contacts: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable
+Nov 04 23:50:53 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Scheduled restart job, restart counter is at 3.
+Nov 04 23:50:54 xiaomi-polaris phosh-osk-stevia[12359]: Settings schema 'mobi.phosh.osk' is not installed
+Nov 04 23:50:54 xiaomi-polaris (coredump-worker)[12360]: Process 12359 (phosh-osk-stevi) of user 109 terminated abnormally with signal 6/ABRT, processing...
+Nov 04 23:50:54 xiaomi-polaris (coredump-worker)[12360]: Process 12359 (phosh-osk-stevi) of user 109 dumped core.
+Nov 04 23:50:54 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Main process exited, code=dumped, status=6/ABRT
+Nov 04 23:50:54 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Failed with result 'core-dump'.
+Nov 04 23:50:54 xiaomi-polaris systemd[11305]: Failed to start Stevia, a user friendly on screen keyboard.
+Nov 04 23:50:55 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Scheduled restart job, restart counter is at 4.
+Nov 04 23:50:55 xiaomi-polaris phosh-osk-stevia[12365]: Settings schema 'mobi.phosh.osk' is not installed
+Nov 04 23:50:55 xiaomi-polaris (coredump-worker)[12366]: Process 12365 (phosh-osk-stevi) of user 109 terminated abnormally with signal 6/ABRT, processing...
+Nov 04 23:50:55 xiaomi-polaris (coredump-worker)[12366]: Process 12365 (phosh-osk-stevi) of user 109 dumped core.
+Nov 04 23:50:55 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Main process exited, code=dumped, status=6/ABRT
+Nov 04 23:50:55 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Failed with result 'core-dump'.
+Nov 04 23:50:55 xiaomi-polaris systemd[11305]: Failed to start Stevia, a user friendly on screen keyboard.
+Nov 04 23:50:56 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Scheduled restart job, restart counter is at 5.
+Nov 04 23:50:56 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Start request repeated too quickly.
+Nov 04 23:50:56 xiaomi-polaris systemd[11305]: mobi.phosh.OSK.service: Failed with result 'start-limit-hit'.
+Nov 04 23:50:56 xiaomi-polaris systemd[11305]: Failed to start Stevia, a user friendly on screen keyboard.
+Nov 04 23:51:05 xiaomi-polaris phrog[11334]: (phoc:11333): phoc-wlroots-CRITICAL **: 23:51:05.007: [backend/drm/atomic.c:82] connector DSI-1: Atomic commit failed: Resource busy

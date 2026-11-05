@@ -1,0 +1,147 @@
+New boot uptime/id:
+96.61 682.77
+7a221b82-fc40-4947-9ebd-b92825a43d84
+
+Automatic service state:
+active
+active
+active
+active
+New role service invocation: 893617c5ab1e4d6c89fbd64717e00fe5
+
+Actual boot prefix:
+e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce  -
+USB data role: host
+
+Type-C port:
+data_role=[host] device
+power_role=[source] sink
+port_type=[dual] source sink
+power_operation_mode=default
+
+VBUS provider:
+state=enabled
+status=on
+microamps=500000
+num_users=1
+
+Charger observations:
+online=0
+voltage_now=0
+current_now=0
+current_max=0
+health=Good
+status=Discharging
+
+USB descriptors:
+1-1 vendor=05e3
+idProduct=0610
+product=USB2.1 Hub
+manufacturer=GenesysLogic
+speed=480
+1-1.1 vendor=1532
+idProduct=006e
+product=Razer DeathAdder Essential
+manufacturer=Razer
+speed=12
+1-1.2 vendor=05e3
+idProduct=0751
+product=USB Storage
+manufacturer=USB Storage
+speed=480
+1-1.4 vendor=046d
+idProduct=c31d
+product=USB Keyboard
+manufacturer=Logitech
+speed=1.5
+usb1 vendor=1d6b
+idProduct=0002
+product=xHCI Host Controller
+manufacturer=Linux 7.1.0-rc1-sdm845-polaris-test06 xhci-hcd
+speed=480
+usb2 vendor=1d6b
+idProduct=0003
+product=xHCI Host Controller
+manufacturer=Linux 7.1.0-rc1-sdm845-polaris-test06 xhci-hcd
+speed=5000
+
+Input names:
+/sys/class/input/event0/device/name: pm8941_pwrkey
+/sys/class/input/event1/device/name: pm8941_resin
+/sys/class/input/event10/device/name: Logitech USB Keyboard System Control
+/sys/class/input/event2/device/name: gpio-keys
+/sys/class/input/event3/device/name: Synaptics S3330
+/sys/class/input/event4/device/name: Razer Razer DeathAdder Essential
+/sys/class/input/event5/device/name: Razer Razer DeathAdder Essential Keyboard
+/sys/class/input/event6/device/name: Razer Razer DeathAdder Essential
+/sys/class/input/event7/device/name: Razer Razer DeathAdder Essential
+/sys/class/input/event8/device/name: Logitech USB Keyboard
+/sys/class/input/event9/device/name: Logitech USB Keyboard Consumer Control
+
+Recent USB/Type-C diagnostics:
+[    0.071121] /soc@0/usb@a6f8800/usb@a600000: Fixed dependency cycle(s) with /soc@0/spmi@c440000/pmic@2/typec@1300/connector
+[    0.071930] /soc@0/spmi@c440000/pmic@2/typec@1300/connector: Fixed dependency cycle(s) with /soc@0/usb@a6f8800/usb@a600000
+[    0.085663] /soc@0/usb@a6f8800/usb@a600000: Fixed dependency cycle(s) with /soc@0/spmi@c440000/pmic@2/typec@1300/connector
+[    0.092237] /soc@0/spmi@c440000/pmic@2/typec@1300/connector: Fixed dependency cycle(s) with /soc@0/usb@a6f8800/usb@a600000
+[    0.250750] /soc@0/spmi@c440000/pmic@2/typec@1300/connector: Fixed dependency cycle(s) with /soc@0/usb@a6f8800/usb@a600000
+[    0.255648] /soc@0/spmi@c440000/pmic@2/typec@1300/connector: Fixed dependency cycle(s) with /soc@0/usb@a6f8800/usb@a600000
+[    0.491357] /soc@0/spmi@c440000/pmic@2/typec@1300/connector: Fixed dependency cycle(s) with /soc@0/usb@a6f8800/usb@a600000
+[    0.491522] /soc@0/usb@a6f8800/usb@a600000: Fixed dependency cycle(s) with /soc@0/spmi@c440000/pmic@2/typec@1300/connector
+[    9.187778] qcom-smbx-charger c440000.spmi:pmic@2:charger@1000: Generation SMB2
+[    9.352402] qcom-pmic-typec-smb2 c440000.spmi:pmic@2:typec@1300: registered SMB2 Type-C port (PD disabled)
+[   10.821877] qcom-usb-vbus-regulator c440000.spmi:pmic@2:usb-vbus-regulator@1100: PMI8998 boost: cmd=0x1 status=0xa fault=0x0 result=0
+[   10.926480] xhci-hcd xhci-hcd.1.auto: xHCI Host Controller
+[   10.926497] xhci-hcd xhci-hcd.1.auto: new USB bus registered, assigned bus number 1
+[   10.926616] xhci-hcd xhci-hcd.1.auto: hcc params 0x0230fe65 hci version 0x110 quirks 0x0000808002000010
+[   10.926639] xhci-hcd xhci-hcd.1.auto: irq 122, io mem 0x0a600000
+[   10.926712] xhci-hcd xhci-hcd.1.auto: xHCI Host Controller
+[   10.926716] xhci-hcd xhci-hcd.1.auto: new USB bus registered, assigned bus number 2
+[   10.926719] xhci-hcd xhci-hcd.1.auto: Host supports USB 3.0 SuperSpeed
+[   10.927008] usb usb1: Product: xHCI Host Controller
+[   10.927011] usb usb1: Manufacturer: Linux 7.1.0-rc1-sdm845-polaris-test06 xhci-hcd
+[   10.927013] usb usb1: SerialNumber: [REDACTED]
+[   10.927648] hub 1-0:1.0: USB hub found
+[   10.927661] hub 1-0:1.0: 1 port detected
+[   10.928029] usb usb2: Product: xHCI Host Controller
+[   10.928031] usb usb2: Manufacturer: Linux 7.1.0-rc1-sdm845-polaris-test06 xhci-hcd
+[   10.928033] usb usb2: SerialNumber: [REDACTED]
+[   10.928410] hub 2-0:1.0: USB hub found
+[   10.928420] hub 2-0:1.0: 1 port detected
+[   11.182063] usb 1-1: new high-speed USB device number 2 using xhci-hcd
+[   11.307548] usb 1-1: New USB device found, idVendor=05e3, idProduct=0610, bcdDevice= 6.55
+[   11.307584] usb 1-1: New USB device strings: Mfr=1, Product=2, SerialNumber=[REDACTED]
+[   11.307597] usb 1-1: Product: USB2.1 Hub
+[   11.307609] usb 1-1: Manufacturer: GenesysLogic
+[   11.343494] hub 1-1:1.0: USB hub found
+[   11.343924] hub 1-1:1.0: 4 ports detected
+[   11.646909] usb 1-1.1: new full-speed USB device number 3 using xhci-hcd
+[   11.747739] usb 1-1.1: New USB device found, idVendor=1532, idProduct=006e, bcdDevice= 2.00
+[   11.747767] usb 1-1.1: New USB device strings: Mfr=1, Product=2, SerialNumber=[REDACTED]
+[   11.747780] usb 1-1.1: Product: Razer DeathAdder Essential
+[   11.747790] usb 1-1.1: Manufacturer: Razer
+[   11.924589] input: Razer Razer DeathAdder Essential as /devices/platform/soc@0/a6f8800.usb/a600000.usb/xhci-hcd.1.auto/usb1/1-1/1-1.1/1-1.1:1.0/0003:1532:006E.0001/input/input4
+[   11.925557] hid-generic 0003:1532:006E.0001: input,hidraw0: USB HID v1.11 Mouse [Razer Razer DeathAdder Essential] on usb-xhci-hcd.1.auto-1.1/input0
+[   11.926214] input: Razer Razer DeathAdder Essential Keyboard as /devices/platform/soc@0/a6f8800.usb/a600000.usb/xhci-hcd.1.auto/usb1/1-1/1-1.1/1-1.1:1.1/0003:1532:006E.0002/input/input5
+[   11.949855] usb 1-1.2: new high-speed USB device number 4 using xhci-hcd
+[   11.978676] input: Razer Razer DeathAdder Essential as /devices/platform/soc@0/a6f8800.usb/a600000.usb/xhci-hcd.1.auto/usb1/1-1/1-1.1/1-1.1:1.1/0003:1532:006E.0002/input/input6
+[   11.979495] hid-generic 0003:1532:006E.0002: input,hidraw1: USB HID v1.11 Keyboard [Razer Razer DeathAdder Essential] on usb-xhci-hcd.1.auto-1.1/input1
+[   11.980245] input: Razer Razer DeathAdder Essential as /devices/platform/soc@0/a6f8800.usb/a600000.usb/xhci-hcd.1.auto/usb1/1-1/1-1.1/1-1.1:1.2/0003:1532:006E.0003/input/input7
+[   12.053117] usb 1-1.2: New USB device found, idVendor=05e3, idProduct=0751, bcdDevice=14.04
+[   12.053142] usb 1-1.2: New USB device strings: Mfr=3, Product=4, SerialNumber=[REDACTED]
+[   12.053150] usb 1-1.2: Product: USB Storage
+[   12.053156] usb 1-1.2: Manufacturer: USB Storage
+[   12.060248] hid-generic 0003:1532:006E.0003: input,hidraw2: USB HID v1.11 Keyboard [Razer Razer DeathAdder Essential] on usb-xhci-hcd.1.auto-1.1/input2
+[   12.146857] usb 1-1.4: new low-speed USB device number 5 using xhci-hcd
+[   12.252452] usb 1-1.4: New USB device found, idVendor=046d, idProduct=c31d, bcdDevice=51.10
+[   12.252482] usb 1-1.4: New USB device strings: Mfr=1, Product=2, SerialNumber=[REDACTED]
+[   12.252491] usb 1-1.4: Product: USB Keyboard
+[   12.252498] usb 1-1.4: Manufacturer: Logitech
+[   12.344141] input: Logitech USB Keyboard as /devices/platform/soc@0/a6f8800.usb/a600000.usb/xhci-hcd.1.auto/usb1/1-1/1-1.4/1-1.4:1.0/0003:046D:C31D.0004/input/input8
+[   12.417689] hid-generic 0003:046D:C31D.0004: input,hidraw3: USB HID v1.10 Keyboard [Logitech USB Keyboard] on usb-xhci-hcd.1.auto-1.4/input0
+[   12.425657] input: Logitech USB Keyboard Consumer Control as /devices/platform/soc@0/a6f8800.usb/a600000.usb/xhci-hcd.1.auto/usb1/1-1/1-1.4/1-1.4:1.1/0003:046D:C31D.0005/input/input9
+[   12.477357] input: Logitech USB Keyboard System Control as /devices/platform/soc@0/a6f8800.usb/a600000.usb/xhci-hcd.1.auto/usb1/1-1/1-1.4/1-1.4:1.1/0003:046D:C31D.0005/input/input10
+[   12.477905] hid-generic 0003:046D:C31D.0005: input,hidraw4: USB HID v1.10 Device [Logitech USB Keyboard] on usb-xhci-hcd.1.auto-1.4/input1
+
+Battery temperature and capacity:
+295
+26

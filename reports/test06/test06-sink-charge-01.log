@@ -1,0 +1,91 @@
+
+SINK SAMPLE 1
+data_role=device
+power_role=source [sink]
+charger.online=1
+charger.status=Charging
+charger.voltage_now=4628906
+charger.current_now=787368
+charger.current_max=900000
+battery.capacity=32
+battery.voltage_now=4017567
+battery.current_now=738769
+battery.temp=300
+source_vbus=disabled
+
+SINK SAMPLE 2
+data_role=device
+power_role=source [sink]
+charger.online=1
+charger.status=Charging
+charger.voltage_now=4628906
+charger.current_now=787368
+charger.current_max=1000000
+battery.capacity=32
+battery.voltage_now=4021474
+battery.current_now=743651
+battery.temp=300
+source_vbus=disabled
+
+SINK SAMPLE 3
+data_role=device
+power_role=source [sink]
+charger.online=1
+charger.status=Charging
+charger.voltage_now=4648437
+charger.current_now=791972
+charger.current_max=1000000
+battery.capacity=32
+battery.voltage_now=4022938
+battery.current_now=744140
+battery.temp=300
+source_vbus=disabled
+
+TCPM attach and current decisions:
+[  154.906761] Unable to find pd-revision property or incorrect array size
+[  154.907669] Setting usb_comm capable false
+[  154.907747] Setting voltage/current limit 0 mV 0 mA
+[  154.907776] polarity 0
+[  154.907780] Requesting mux state 0, usb-role 0, orientation 0
+[  154.907897] state change INVALID_STATE -> SNK_UNATTACHED [rev1 NONE_AMS]
+[  154.907940] CC1: 0 -> 3, CC2: 0 -> 0 [state SNK_UNATTACHED, polarity 0, connected]
+[  154.907945] state change SNK_UNATTACHED -> SNK_ATTACH_WAIT [rev1 NONE_AMS]
+[  154.907948] state change SNK_ATTACH_WAIT -> PORT_RESET [rev1 NONE_AMS]
+[  154.907950] c440000.spmi:pmic@2:typec@1300: registered
+[  154.908210] Setting usb_comm capable false
+[  154.908264] Setting voltage/current limit 0 mV 0 mA
+[  154.908299] polarity 0
+[  154.908302] Requesting mux state 0, usb-role 0, orientation 0
+[  154.908830] cc:=2
+[  154.908870] pending state change PORT_RESET -> PORT_RESET_WAIT_OFF @ 100 ms [rev1 NONE_AMS]
+[  154.908884] VBUS on
+[  154.913000] CC1: 3 -> 3, CC2: 0 -> 0 [state PORT_RESET, polarity 0, connected]
+[  155.009651] state change PORT_RESET -> PORT_RESET_WAIT_OFF [delayed 100 ms]
+[  155.009662] pending state change PORT_RESET_WAIT_OFF -> SNK_UNATTACHED @ 920 ms [rev1 NONE_AMS]
+[  155.930446] state change PORT_RESET_WAIT_OFF -> SNK_UNATTACHED [delayed 920 ms]
+[  155.930460] Start toggling
+[  155.930464] cc:=2
+[  155.930540] pending state change SNK_UNATTACHED -> SRC_UNATTACHED @ 30 ms [rev1 NONE_AMS]
+[  155.933689] CC1: 3 -> 3, CC2: 0 -> 0 [state SNK_UNATTACHED, polarity 0, connected]
+[  155.933693] state change SNK_UNATTACHED -> SNK_ATTACH_WAIT [rev1 NONE_AMS]
+[  155.933696] pending state change SNK_ATTACH_WAIT -> SNK_DEBOUNCED @ 200 ms [rev1 NONE_AMS]
+[  156.134497] state change SNK_ATTACH_WAIT -> SNK_DEBOUNCED [delayed 200 ms]
+[  156.134508] state change SNK_DEBOUNCED -> SNK_ATTACHED [rev1 NONE_AMS]
+[  156.134510] polarity 0
+[  156.134512] Requesting mux state 1, usb-role 2, orientation 1
+[  156.134598] state change SNK_ATTACHED -> SNK_STARTUP [rev1 NONE_AMS]
+[  156.134600] state change SNK_STARTUP -> SNK_DISCOVERY [rev3 NONE_AMS]
+[  156.134635] Setting voltage/current limit 5000 mV 1000 mA
+[  156.134657] vbus=0 charge:=1
+[  156.134672] state change SNK_DISCOVERY -> SNK_READY [rev3 NONE_AMS]
+
+Driver current decisions:
+[  154.907734] qcom-pmic-typec-smb2 c440000.spmi:pmic@2:typec@1300: set_vbus: off (0)
+[  154.907769] qcom-pmic-typec-smb2 c440000.spmi:pmic@2:typec@1300: charger limit set to 0mA at 0mV
+[  154.907997] qcom-pmic-typec-smb2 c440000.spmi:pmic@2:typec@1300: registered SMB2 Type-C port (PD disabled)
+[  154.908248] qcom-pmic-typec-smb2 c440000.spmi:pmic@2:typec@1300: set_vbus: off (0)
+[  154.908293] qcom-pmic-typec-smb2 c440000.spmi:pmic@2:typec@1300: charger limit set to 0mA at 0mV
+[  156.134654] qcom-pmic-typec-smb2 c440000.spmi:pmic@2:typec@1300: charger limit set to 1000mA at 5000mV
+[  156.134669] qcom-pmic-typec-smb2 c440000.spmi:pmic@2:typec@1300: set_vbus: off (0)
+
+Sink role/charging checks passed; controller stays loaded.

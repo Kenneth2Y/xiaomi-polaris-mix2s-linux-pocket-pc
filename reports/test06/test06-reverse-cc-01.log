@@ -1,0 +1,131 @@
+Current role:
+device
+
+Recent Type-C orientation/attachment evidence:
+[    9.355139] CC1: 0 -> 0, CC2: 0 -> 0 [state PORT_RESET, polarity 0, disconnected]
+[    9.452541] state change PORT_RESET -> PORT_RESET_WAIT_OFF [delayed 100 ms]
+[    9.452552] state change PORT_RESET_WAIT_OFF -> SNK_UNATTACHED [rev1 NONE_AMS]
+[    9.452558] Start toggling
+[    9.454884] CC1: 0 -> 0, CC2: 0 -> 0 [state SNK_UNATTACHED, polarity 0, disconnected]
+[    9.482848] Start toggling
+[    9.486040] CC1: 0 -> 0, CC2: 0 -> 0 [state TOGGLING, polarity 0, disconnected]
+[    9.685416] CC1: 0 -> 2, CC2: 0 -> 0 [state TOGGLING, polarity 0, connected]
+[    9.685422] state change TOGGLING -> SRC_ATTACH_WAIT [rev1 NONE_AMS]
+[    9.685426] pending state change SRC_ATTACH_WAIT -> SNK_TRY @ 200 ms [rev1 NONE_AMS]
+[    9.885443] state change SRC_ATTACH_WAIT -> SNK_TRY [delayed 200 ms]
+[    9.885450] cc:=2
+[    9.885491] pending state change SNK_TRY -> SNK_TRY_WAIT @ 100 ms [rev1 NONE_AMS]
+[    9.887856] CC1: 2 -> 0, CC2: 0 -> 0 [state SNK_TRY, polarity 0, disconnected]
+[    9.986499] state change SNK_TRY -> SNK_TRY_WAIT [delayed 100 ms]
+[    9.986512] state change SNK_TRY_WAIT -> SRC_TRYWAIT [rev1 NONE_AMS]
+[    9.986518] cc:=3
+[    9.986607] pending state change SRC_TRYWAIT -> SRC_TRYWAIT_UNATTACHED @ 100 ms [rev1 NONE_AMS]
+[    9.989921] CC1: 0 -> 0, CC2: 0 -> 0 [state SRC_TRYWAIT, polarity 0, disconnected]
+[   10.086662] state change SRC_TRYWAIT -> SRC_TRYWAIT_UNATTACHED [delayed 100 ms]
+[   10.086677] state change SRC_TRYWAIT_UNATTACHED -> SNK_UNATTACHED [rev1 NONE_AMS]
+[   10.086684] Start toggling
+[   10.089590] CC1: 0 -> 0, CC2: 0 -> 0 [state SNK_UNATTACHED, polarity 0, disconnected]
+[   10.116772] Start toggling
+[   10.120853] CC1: 0 -> 0, CC2: 0 -> 0 [state TOGGLING, polarity 0, disconnected]
+[   10.244909] CC1: 0 -> 0, CC2: 0 -> 0 [state TOGGLING, polarity 0, disconnected]
+[   10.614518] CC1: 0 -> 2, CC2: 0 -> 0 [state TOGGLING, polarity 0, connected]
+[   10.614523] state change TOGGLING -> SRC_ATTACH_WAIT [rev1 NONE_AMS]
+[   10.614528] pending state change SRC_ATTACH_WAIT -> SRC_ATTACHED @ 200 ms [rev1 NONE_AMS]
+[   10.814541] state change SRC_ATTACH_WAIT -> SRC_ATTACHED [delayed 200 ms]
+[   10.814544] polarity 0
+[   10.814546] vbus:=1 charge=0
+[   10.821934] Requesting mux state 1, usb-role 1, orientation 1
+[   10.821996] pending state change SRC_ATTACHED -> SRC_UNATTACHED @ 480 ms [rev1 NONE_AMS]
+[   10.822036] VBUS on
+[   10.822043] state change SRC_ATTACHED -> SRC_STARTUP [rev1 NONE_AMS]
+[   10.822045] state change SRC_STARTUP -> SRC_READY [rev3 NONE_AMS]
+[  122.020880] CC1: 2 -> 2, CC2: 0 -> 0 [state SRC_READY, polarity 0, connected]
+[  122.021011] CC1: 2 -> 0, CC2: 0 -> 0 [state SRC_READY, polarity 0, disconnected]
+[  122.021017] state change SRC_READY -> SNK_UNATTACHED [rev3 NONE_AMS]
+[  122.021383] Start toggling
+[  122.021451] VBUS off
+[  122.021453] VBUS VSAFE0V
+[  122.025449] CC1: 0 -> 0, CC2: 0 -> 0 [state SNK_UNATTACHED, polarity 0, disconnected]
+[  122.051455] Start toggling
+[  122.054430] CC1: 0 -> 0, CC2: 0 -> 0 [state TOGGLING, polarity 0, disconnected]
+[  124.249641] CC1: 0 -> 0, CC2: 0 -> 0 [state TOGGLING, polarity 0, disconnected]
+[  124.625294] CC1: 0 -> 0, CC2: 0 -> 2 [state TOGGLING, polarity 0, connected]
+[  124.625312] state change TOGGLING -> SRC_ATTACH_WAIT [rev3 NONE_AMS]
+[  124.625320] pending state change SRC_ATTACH_WAIT -> SNK_TRY @ 200 ms [rev3 NONE_AMS]
+[  124.828102] state change SRC_ATTACH_WAIT -> SNK_TRY [delayed 200 ms]
+[  124.828126] cc:=2
+[  124.828200] pending state change SNK_TRY -> SNK_TRY_WAIT @ 100 ms [rev3 NONE_AMS]
+[  124.831252] CC1: 0 -> 0, CC2: 2 -> 0 [state SNK_TRY, polarity 0, disconnected]
+[  124.929162] state change SNK_TRY -> SNK_TRY_WAIT [delayed 100 ms]
+[  124.929179] state change SNK_TRY_WAIT -> SRC_TRYWAIT [rev3 NONE_AMS]
+[  124.929184] cc:=3
+[  124.929270] pending state change SRC_TRYWAIT -> SRC_TRYWAIT_UNATTACHED @ 100 ms [rev3 NONE_AMS]
+[  124.932195] CC1: 0 -> 0, CC2: 0 -> 0 [state SRC_TRYWAIT, polarity 0, disconnected]
+[  125.032087] state change SRC_TRYWAIT -> SRC_TRYWAIT_UNATTACHED [delayed 100 ms]
+[  125.032112] state change SRC_TRYWAIT_UNATTACHED -> SNK_UNATTACHED [rev3 NONE_AMS]
+[  125.032120] Start toggling
+[  125.035325] CC1: 0 -> 0, CC2: 0 -> 0 [state SNK_UNATTACHED, polarity 0, disconnected]
+[  125.063164] Start toggling
+[  125.066154] CC1: 0 -> 0, CC2: 0 -> 0 [state TOGGLING, polarity 0, disconnected]
+[  125.192884] CC1: 0 -> 0, CC2: 0 -> 0 [state TOGGLING, polarity 0, disconnected]
+[  125.566081] CC1: 0 -> 0, CC2: 0 -> 2 [state TOGGLING, polarity 0, connected]
+[  125.566111] state change TOGGLING -> SRC_ATTACH_WAIT [rev3 NONE_AMS]
+[  125.566122] pending state change SRC_ATTACH_WAIT -> SRC_ATTACHED @ 200 ms [rev3 NONE_AMS]
+[  125.767081] state change SRC_ATTACH_WAIT -> SRC_ATTACHED [delayed 200 ms]
+[  125.767104] polarity 1
+[  125.767109] vbus:=1 charge=0
+[  125.774996] Requesting mux state 1, usb-role 1, orientation 2
+[  125.775140] pending state change SRC_ATTACHED -> SRC_UNATTACHED @ 480 ms [rev3 NONE_AMS]
+[  125.775187] VBUS on
+[  125.775188] state change SRC_ATTACHED -> SRC_STARTUP [rev3 NONE_AMS]
+[  125.775194] state change SRC_STARTUP -> SRC_READY [rev3 NONE_AMS]
+[  177.188131] CC1: 0 -> 0, CC2: 2 -> 2 [state SRC_READY, polarity 1, connected]
+[  177.189164] CC1: 0 -> 0, CC2: 2 -> 0 [state SRC_READY, polarity 1, disconnected]
+[  177.189165] state change SRC_READY -> SNK_UNATTACHED [rev3 NONE_AMS]
+[  177.189450] Start toggling
+[  177.189495] VBUS off
+[  177.189496] VBUS VSAFE0V
+[  177.192888] CC1: 0 -> 0, CC2: 0 -> 0 [state SNK_UNATTACHED, polarity 0, disconnected]
+[  177.219535] Start toggling
+[  177.222213] CC1: 0 -> 0, CC2: 0 -> 0 [state TOGGLING, polarity 0, disconnected]
+[  183.723226] VBUS on
+[  183.723261] CC1: 0 -> 0, CC2: 0 -> 0 [state TOGGLING, polarity 0, disconnected]
+[  183.830257] CC1: 0 -> 3, CC2: 0 -> 0 [state TOGGLING, polarity 0, connected]
+[  183.830273] state change TOGGLING -> SNK_ATTACH_WAIT [rev3 NONE_AMS]
+[  183.830282] pending state change SNK_ATTACH_WAIT -> SNK_DEBOUNCED @ 200 ms [rev3 NONE_AMS]
+[  184.033077] state change SNK_ATTACH_WAIT -> SNK_DEBOUNCED [delayed 200 ms]
+[  184.033103] state change SNK_DEBOUNCED -> SNK_ATTACHED [rev3 NONE_AMS]
+[  184.033109] polarity 0
+[  184.033113] Requesting mux state 1, usb-role 2, orientation 1
+[  184.033349] state change SNK_ATTACHED -> SNK_STARTUP [rev3 NONE_AMS]
+[  184.033353] state change SNK_STARTUP -> SNK_DISCOVERY [rev3 NONE_AMS]
+[  184.033403] Setting voltage/current limit 5000 mV 100 mA
+[  184.033436] vbus=0 charge:=1
+[  184.033454] state change SNK_DISCOVERY -> SNK_READY [rev3 NONE_AMS]
+
+Recent external USB re-enumeration:
+[   10.927001] usb usb1: New USB device found, idVendor=1d6b, idProduct=0002, bcdDevice= 7.01
+[   10.928023] usb usb2: New USB device found, idVendor=1d6b, idProduct=0003, bcdDevice= 7.01
+[   11.307548] usb 1-1: New USB device found, idVendor=05e3, idProduct=0610, bcdDevice= 6.55
+[   11.747739] usb 1-1.1: New USB device found, idVendor=1532, idProduct=006e, bcdDevice= 2.00
+[   12.053117] usb 1-1.2: New USB device found, idVendor=05e3, idProduct=0751, bcdDevice=14.04
+[   12.252452] usb 1-1.4: New USB device found, idVendor=046d, idProduct=c31d, bcdDevice=51.10
+[  122.002747] usb 1-1: USB disconnect, device number 2
+[  122.002784] usb 1-1.1: USB disconnect, device number 3
+[  122.021673] usb usb2: USB disconnect, device number 1
+[  122.022557] usb usb1: USB disconnect, device number 1
+[  122.104580] usb 1-1.2: USB disconnect, device number 4
+[  122.140224] usb 1-1.4: USB disconnect, device number 5
+[  125.774910] qcom-usb-vbus-regulator c440000.spmi:pmic@2:usb-vbus-regulator@1100: PMI8998 boost: cmd=0x1 status=0xa fault=0x0 result=0
+[  125.891982] usb usb1: New USB device found, idVendor=1d6b, idProduct=0002, bcdDevice= 7.01
+[  125.894207] usb usb2: New USB device found, idVendor=1d6b, idProduct=0003, bcdDevice= 7.01
+[  126.277339] usb 1-1: New USB device found, idVendor=05e3, idProduct=0610, bcdDevice= 6.55
+[  126.781250] usb 1-1.1: New USB device found, idVendor=1532, idProduct=006e, bcdDevice= 2.00
+[  127.214059] usb 1-1.2: New USB device found, idVendor=05e3, idProduct=0751, bcdDevice=14.04
+[  127.428982] usb 1-1.4: New USB device found, idVendor=046d, idProduct=c31d, bcdDevice=51.10
+[  177.172305] usb 1-1: USB disconnect, device number 2
+[  177.172362] usb 1-1.1: USB disconnect, device number 3
+[  177.189670] usb usb2: USB disconnect, device number 1
+[  177.194383] usb usb1: USB disconnect, device number 1
+[  177.286895] usb 1-1.2: USB disconnect, device number 4
+[  177.330026] usb 1-1.4: USB disconnect, device number 5

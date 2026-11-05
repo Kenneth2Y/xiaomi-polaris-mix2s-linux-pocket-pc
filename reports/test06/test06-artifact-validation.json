@@ -1,0 +1,15 @@
+{
+  "boot_roundtrip": "byte-identical",
+  "cpio_roundtrip": "metadata and payload identical",
+  "corruption_checks": "passed",
+  "kernel_gzip_bytes": 16046696,
+  "dtb_bytes": 109781,
+  "entries": 379,
+  "modules": 19,
+  "module_signatures_cryptographically_verified": 24,
+  "module_signing_certificate_embedded_in_kernel": true,
+  "module_dependency_closure": "complete",
+  "kernel_release": "7.1.0-rc1-sdm845-polaris-test06",
+  "image_sha256": "e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce",
+  "hardware_boot_test": "not performed"
+}

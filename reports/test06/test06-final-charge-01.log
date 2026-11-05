@@ -1,0 +1,61 @@
+Final automatic charging transition:
+
+SAMPLE 1
+device
+source [sink]
+charger.usb_type=Unknown SDP [DCP] CDP
+charger.online=1
+charger.status=Charging
+charger.voltage_now=4609375
+charger.current_now=722905
+charger.current_max=750000
+battery.status=Charging
+battery.capacity=29
+battery.voltage_now=3993397
+battery.current_now=643554
+battery.temp=290
+source_vbus=disabled
+
+SAMPLE 2
+device
+source [sink]
+charger.usb_type=Unknown SDP [DCP] CDP
+charger.online=1
+charger.status=Charging
+charger.voltage_now=4609375
+charger.current_now=722905
+charger.current_max=750000
+battery.status=Charging
+battery.capacity=29
+battery.voltage_now=3994130
+battery.current_now=646972
+battery.temp=290
+source_vbus=disabled
+
+SAMPLE 3
+device
+source [sink]
+charger.usb_type=Unknown SDP [DCP] CDP
+charger.online=1
+charger.status=Charging
+charger.voltage_now=4609375
+charger.current_now=727509
+charger.current_max=750000
+battery.status=Charging
+battery.capacity=29
+battery.voltage_now=3993397
+battery.current_now=643554
+battery.temp=290
+source_vbus=disabled
+
+Persistent services:
+enabled
+enabled
+enabled
+enabled
+enabled
+
+Unexpected faults:
+
+Boot hash:
+e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce  -

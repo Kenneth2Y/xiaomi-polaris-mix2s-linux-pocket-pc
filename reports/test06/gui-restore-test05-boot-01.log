@@ -1,0 +1,13 @@
+Current boot prefix before restore:
+4d39803c4d8ac873a8e32a3afe7a3a3f33bb08b6774fc470750d53483a55c0cc  -
+
+Restore verified test05 image to boot only:
+7+1 records in
+7+1 records out
+29515776 bytes (28.1MB) copied, 0.163377 seconds, 172.3MB/s
+
+Verify actual restored boot prefix:
+ac2d4496089a3f7658b8cbdae6b6b364ffe81855b42d4434bf3943198eb1cb95  -
+
+Running kernel preserved, no reboot performed:
+7.1.0-rc1-sdm845-polaris-test05

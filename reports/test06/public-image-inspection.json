@@ -1,0 +1,18 @@
+{
+  "sha256": "e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce",
+  "bytes": 29515776,
+  "kernel_sha256": "d4fd9cc4f12ccadc74a651950a5d8f8081557b0466bf2971d56f3b11bccffeaa",
+  "dtb_sha256": "74cd2c33d6b659041b4a91d9b8d719b64c1cd830d7b97c22879e75426de517df",
+  "initramfs_sha256": "c60923c19a12e1b32cde5d9d1ffe2ab124f68a65a89dd4bcfd9b98f4fdda3744",
+  "entries": 379,
+  "sensitive_path_findings": [],
+  "roundtrip": {
+    "boot_roundtrip": "byte-identical",
+    "cpio_roundtrip": "metadata and payload identical",
+    "corruption_checks": "passed",
+    "kernel_gzip_bytes": 16046696,
+    "dtb_bytes": 109781,
+    "entries": 379,
+    "modules": 19
+  }
+}

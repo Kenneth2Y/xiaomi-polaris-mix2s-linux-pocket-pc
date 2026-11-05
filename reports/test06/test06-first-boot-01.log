@@ -1,0 +1,47 @@
+Running release: 7.1.0-rc1-sdm845-polaris-test06
+Actual boot prefix: e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce  -
+
+Type-C remains manually gated:
+unloaded
+
+Persisted services:
+active
+active
+active
+
+New charging DT limits (big-endian bytes):
+/sys/firmware/devicetree/base/soc@0/spmi@c440000/pmic@2/charger@1000/input-current-limit-microamp:  00 0f 42 40
+/sys/firmware/devicetree/base/battery/constant-charge-current-max-microamp:  00 0b 71 b0
+
+Power supplies:
+pmi8998-charger
+usb_type=Unknown SDP [DCP] CDP
+online=1
+status=Charging
+voltage_now=4804687
+current_now=488076
+current_max=500000
+qcom-battery
+status=Charging
+capacity=31
+voltage_now=3922841
+current_now=362304
+temp=305
+
+Critical boot diagnostics:
+[   10.290980] qcom-smbx-charger c440000.spmi:pmic@2:charger@1000: Generation SMB2
+
+Deferred devices:
+
+GUI processes:
+  784 root     greetd           greetd -c /etc/phrog/greetd-config.toml
+  842 greetd   phoc             phoc -S -C /etc/phrog/phoc.ini -E gnome-session --session=phrog
+  868 greetd   gnome-session-i  /usr/libexec/gnome-session-init-worker phrog
+  883 greetd   gnome-session-s  /usr/libexec/gnome-session-service --session=phrog
+  890 greetd   phrog            phrog
+  892 greetd   phosh-osk-stevi  /usr/bin/phosh-osk-stevia --allow-replacement
+
+Wi-Fi:
+GENERAL.STATE:                          100 (connected)
+GENERAL.CONNECTION:                     polaris-<2.4GHz热点>
+IP4.ADDRESS[1]:                         <设备无线地址>/24

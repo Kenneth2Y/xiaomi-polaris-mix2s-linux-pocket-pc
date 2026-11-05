@@ -1,0 +1,24 @@
+MONITOR /dev/input/event4 name=Razer Razer DeathAdder Essential
+MONITOR /dev/input/event5 name=Razer Razer DeathAdder Essential Keyboard
+MONITOR /dev/input/event6 name=Razer Razer DeathAdder Essential
+MONITOR /dev/input/event7 name=Razer Razer DeathAdder Essential
+MONITOR /dev/input/event8 name=Logitech USB Keyboard
+MONITOR /dev/input/event9 name=Logitech USB Keyboard Consumer Control
+MONITOR /dev/input/event10 name=Logitech USB Keyboard System Control
+READY USB_devices=7 seconds=30
+SUMMARY fd=3 presses=14 releases=14 repeats=0 relative=3427 frames=3006 dropped=0
+SUMMARY fd=4 presses=0 releases=0 repeats=0 relative=0 frames=0 dropped=0
+SUMMARY fd=5 presses=0 releases=0 repeats=0 relative=0 frames=0 dropped=0
+SUMMARY fd=6 presses=0 releases=0 repeats=0 relative=0 frames=0 dropped=0
+SUMMARY fd=7 presses=11 releases=11 repeats=0 relative=0 frames=23 dropped=0
+SUMMARY fd=8 presses=0 releases=0 repeats=0 relative=0 frames=0 dropped=0
+SUMMARY fd=9 presses=0 releases=0 repeats=0 relative=0 frames=0 dropped=0
+
+Supply state after input test:
+state=enabled
+status=on
+microamps=500000
+
+Battery capacity/temp:
+31
+295

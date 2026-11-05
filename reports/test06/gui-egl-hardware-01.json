@@ -1,0 +1,12 @@
+{
+  "date": "2026-11-04",
+  "test": "timeout 20 eglinfo -B -p surfaceless, run as user over Wi-Fi SSH",
+  "exit_code": 0,
+  "EGL_vendor": "Mesa Project",
+  "EGL_version": "1.5",
+  "OpenGL_vendor": "freedreno",
+  "OpenGL_renderer": "FD630",
+  "OpenGL_core": "4.6 (Core Profile) Mesa 26.2.6",
+  "OpenGL_ES": "OpenGL ES 3.2 Mesa 26.2.6",
+  "scope": "EGL initialization and real GL contexts; sustained rendering benchmark not performed"
+}
