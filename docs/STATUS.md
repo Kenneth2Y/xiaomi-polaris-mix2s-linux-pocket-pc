@@ -2,6 +2,8 @@
 
 基线test06，验收日期2026-11-05。不是对读者当前设备的远程检测。
 
+2026-11-05 后续对原开发机设置了 Phosh 不因空闲而黑屏、锁屏、调暗或自动挂起，具体回读结果、限制和回退见 [操作记录](codex-operation-records/2026-11-05-17-36-45-phosh-idle.md)。这是该设备用户配置，不是 Release 镜像或新装系统的默认值。
+
 - Nura edge / systemd，ARM64，Linux 7.1.0-rc1-sdm845-polaris-test06。
 - LCD、触摸、Phosh图形界面、Stevia字母键盘、Foot输入用户验收通过。
 - Mesa26.2.6真实freedreno FD630，上下文EGL1.5、GL4.6、GLES3.2成功；未做长时间性能测试。
