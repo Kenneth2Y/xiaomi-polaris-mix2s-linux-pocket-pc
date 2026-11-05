@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+test "$(cat /sys/class/usb_role/a600000.usb-role-switch/role)" = host
+/tmp/polaris-usb-input-readonly-20261104 30
+printf '\nSupply state after input test:\n'
+for d in /sys/class/regulator/regulator*; do
+ test -r "$d/name" || continue
+ test "$(cat "$d/name")" = polaris-usb-vbus || continue
+ for f in state status microamps; do printf '%s=' "$f"; cat "$d/$f"; done
+done
+printf '\nBattery capacity/temp:\n'
+cat /sys/class/power_supply/qcom-battery/capacity /sys/class/power_supply/qcom-battery/temp

@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Redact device identifiers in diagnostic output before writing logs."""
+import re
+import sys
+
+
+def redact(line):
+    line = line.replace("\0", r"\0")
+    return re.sub(r"(?i)((?:androidboot\.)?(?:serialno|serialnumber|serial_number|imei|imsi|iccid)[=:\s]+)\S+", r"\1[REDACTED]", line)
+
+
+if __name__ == "__main__":
+    if "--auth-until-marker" in sys.argv:
+        # Authentication prompts may contain no newline and PAM may ignore -p.
+        # Display that phase immediately on stderr; never send it to log files.
+        pending, authenticated = "", False
+        while char := sys.stdin.read(1):
+            if not authenticated:
+                sys.stderr.write(char)
+                sys.stderr.flush()
+                pending += char
+                if char == "\n":
+                    authenticated = pending.strip() == "POLARIS_DMESG_BEGIN"
+                    pending = ""
+            else:
+                pending += char
+                if char == "\n":
+                    sys.stdout.write(redact(pending))
+                    sys.stdout.flush()
+                    pending = ""
+        if authenticated:
+            sys.stdout.write(redact(pending))
+    elif "--interactive" in sys.argv:
+        pending = ""
+        while char := sys.stdin.read(1):
+            pending += char
+            if char == "\n" or pending.endswith("[polaris-sudo] Password: "):
+                sys.stdout.write(redact(pending))
+                sys.stdout.flush()
+                pending = ""
+        sys.stdout.write(redact(pending))
+    else:
+        for line in sys.stdin:
+            sys.stdout.write(redact(line))

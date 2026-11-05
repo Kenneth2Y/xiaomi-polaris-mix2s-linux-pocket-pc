@@ -1,0 +1,18 @@
+#!/bin/sh
+# User authorized autonomous boot testing. Only reboot a preserved boot image.
+set -eu
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+test -b "$dev"
+old=$(head -c 30961664 "$dev" | sha256sum)
+current=$(head -c 29515776 "$dev" | sha256sum)
+case "${current%% *}" in
+    68093f62b6aa40abfa5fdd3704d6ab33c97b31ae92993118d1f5ba51b427fd46|\
+    6f01281de6087dea502462f373b67daedc0a33403cd41c451753736b25de8922|\
+    83eda61cff344b3fa8486b5e34626ee7332dc2682d7edccc1abba6b2eae42eb0|\
+    7de6ede15d2f4a7716cc138f909366e17dfa3fa174c8c6fbe04aec8bee0a76e5|\
+    ac2d4496089a3f7658b8cbdae6b6b364ffe81855b42d4434bf3943198eb1cb95) ;;
+    *) test "${old%% *}" = c51af14496f0f9d63117ab1262ad0703a6ce2cde4bcd13b214e0a06cdcde4fc9 ;;
+esac
+printf 'Actual boot matches a preserved project image.\n'
+sync
+systemctl reboot --reboot-argument=bootloader

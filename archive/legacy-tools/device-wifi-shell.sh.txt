@@ -1,0 +1,17 @@
+#!/bin/bash
+# Interactive phone shell, using the existing phone key and no stored passwords.
+set -euo pipefail
+project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+wifi_ip=${1:-$(cat "$project/build/ssh/wifi-address")}
+python3 -B - "$wifi_ip" <<'PY'
+import ipaddress,sys
+a=ipaddress.IPv4Address(sys.argv[1])
+if not a.is_private or a.is_loopback or a.is_link_local or a in ipaddress.ip_network('172.16.0.0/16'):
+    raise SystemExit('Expected the phone private LAN address, separate from USB.')
+PY
+exec ssh -F /dev/null -tt -S "$project/build/ssh/wifi-control" \
+    -o ControlMaster=auto -o ControlPersist=30m \
+    -o StrictHostKeyChecking=yes -o HostKeyAlias=172.16.42.1 \
+    -o UserKnownHostsFile=<用户目录>/.ssh/known_hosts \
+    -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+    "user@$wifi_ip"

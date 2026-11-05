@@ -1,0 +1,21 @@
+#!/bin/sh
+# Build only a diagnostic DTB; do not mutate the tested prepared board source.
+set -eu
+cd /mnt/project/build/recipe/src/linux-sdm845-7.1-rc1-r0
+board=arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts
+backup=/mnt/project/build/artifacts/test03/sdm845-xiaomi-polaris.before-host.dts
+test ! -e "$backup"
+cp "$board" "$backup"
+trap 'cp "$backup" "$board"' EXIT
+patch -p1 < /mnt/project/patches/0006-polaris-usb-fixed-host-diagnostic.patch
+make -j4 ARCH=arm64 LLVM=1 qcom/sdm845-xiaomi-polaris.dtb
+cp arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dtb /mnt/project/build/artifacts/test03/
+scripts/dtc/dtc -I dtb -O dts arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dtb \
+    > /mnt/project/logs/test03-device-tree.dts
+cp "$backup" "$board"
+trap - EXIT
+# Restore the prepared tree's original test02 DTB as well as the source file.
+make -j4 ARCH=arm64 LLVM=1 qcom/sdm845-xiaomi-polaris.dtb
+cmp arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dtb \
+    /mnt/project/build/artifacts/test02/sdm845-xiaomi-polaris.dtb
+printf 'test03 host DTB built; prepared source and test02 DTB restored.\n'

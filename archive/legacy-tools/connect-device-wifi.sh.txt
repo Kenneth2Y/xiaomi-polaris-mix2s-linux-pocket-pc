@@ -1,0 +1,16 @@
+#!/bin/bash
+# Run in the user's own terminal. Do not tee, record, or pass secrets as arguments.
+set -euo pipefail
+project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+ssid=${1:-<2.4GHz热点>}
+case "$ssid" in <5GHz热点>|<2.4GHz热点>) ;; *) echo 'Choose <5GHz热点> or <2.4GHz热点>.' >&2; exit 2;; esac
+echo "连接手机 Wi-Fi：$ssid"
+echo '若出现 sudo Password，先输入手机登录密码；随后在无线密码提示处输入 Wi-Fi 密码。'
+echo '密码不显示，不要使用日志录制。无线密码不会写入 NetworkManager 配置。'
+# Keep validation and activation in the same privileged process. --ask keeps the
+# secret off command lines and stdin files; not-saved prevents persistence.
+exec ssh -F /dev/null -tt -S "$project/build/ssh/control" \
+    -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile=<用户目录>/.ssh/known_hosts \
+    -o ConnectTimeout=5 user@172.16.42.1 \
+    "sudo -- sh -eu -c 'flags=\$(nmcli -g 802-11-wireless-security.psk-flags connection show polaris-$ssid); case \"\$flags\" in 2|\"2 (not saved)\"|\"2 (not-saved)\") ;; *) echo Unsafe-PSK-flags; exit 1;; esac; exec nmcli --ask connection up id polaris-$ssid ifname wlan0'"

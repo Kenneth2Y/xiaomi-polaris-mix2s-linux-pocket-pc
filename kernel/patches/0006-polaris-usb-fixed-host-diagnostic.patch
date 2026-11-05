@@ -1,0 +1,31 @@
+From: Polaris Lab <polaris@localhost>
+Date: Wed, 4 Nov 2026 18:20:00 +0800
+Subject: [PATCH] arm64: dts: qcom: polaris: select host for a controlled USB test
+
+The current board DT fixes DWC3 in peripheral mode. Wi-Fi SSH and encrypted
+Wi-Fi credentials now work across reboot, allowing an independent host-data
+path test without relying on the USB gadget for access.
+
+Use a separate diagnostic boot image to select host mode. This changes no
+PMIC registers, charger configuration, Type-C policy, or VBUS regulator. It
+does not implement automatic role switching or claim working bus power.
+Keep the LCD/touch/Wi-Fi test02 image as the immediate rollback.
+
+Signed-off-by: Polaris Lab <polaris@localhost>
+
+---
+ arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts b/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts
+--- a/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts
++++ b/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts
+@@ -644,7 +644,7 @@ &usb_1 {
+ };
+ 
+ &usb_1_dwc3 {
+-	dr_mode = "peripheral";
++	dr_mode = "host";
+ 
+ 	/* Fastest mode for USB 2 */
+ 	maximum-speed = "high-speed";

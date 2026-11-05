@@ -1,0 +1,61 @@
+From: Polaris Lab <polaris@localhost>
+Subject: [PATCH] arm64: dts: polaris: bound dedicated charging and link FG
+
+The user provided a 5 V / 2 A supply which is detected as a BC1.2 DCP.
+Allow at most 1 A USB input for a DCP and 750 mA battery fast charging,
+well below the original 3.3 A battery profile. CDP remains 500 mA;
+unknown/unconfigured SDP is limited to one 100 mA USB2 unit. No PD,
+higher voltage, or increase to the 500 mA OTG source limit is enabled.
+
+Link the fuel gauge to the real charger supply for status reporting.
+The corrected current fallback is retained for systems without a link.
+These limits require independent hardware verification before autoload.
+
+Signed-off-by: Polaris Lab <polaris@localhost>
+---
+diff --git a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c
+--- a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c
++++ b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c
+@@ -147,8 +147,9 @@
+ 
+ 	switch (value.intval) {
+ 	case POWER_SUPPLY_USB_TYPE_DCP:
++		/* Dedicated charger only; no PD or voltage negotiation. */
++		return 1000;
+ 	case POWER_SUPPLY_USB_TYPE_CDP:
+-		/* Keep the polaris experiment below 500 mA, even on a DCP. */
+ 		return 500;
+ 	default:
+ 		/* Unknown and unconfigured SDP sources get only one USB2 unit. */
+diff --git a/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts b/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts
+--- a/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts
++++ b/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts
+@@ -42,11 +42,11 @@
+ 	qcom,msm-id = <QCOM_ID_SDM845 0x20001>;
+ 	qcom,board-id = <0x2a 0x0>;
+ 
+-	/* OEM ATL/COS profiles: 4.4 V. Initial wired tests cap current to 0.5 A. */
++	/* OEM ATL/COS profiles: 4.4 V. Test06 caps battery current to 0.75 A. */
+ 	polaris_battery: battery {
+ 		compatible = "simple-battery";
+ 		voltage-max-design-microvolt = <4400000>;
+-		constant-charge-current-max-microamp = <500000>;
++		constant-charge-current-max-microamp = <750000>;
+ 	};
+ 
+ 	aliases {
+@@ -778,10 +778,11 @@
+ 
+ &pmi8998_charger {
+ 	monitored-battery = <&polaris_battery>;
+-	input-current-limit-microamp = <500000>;
++	input-current-limit-microamp = <1000000>;
+ 	status = "okay";
+ };
+ 
+ &pmi8998_fg {
+-	status = "okay";
+-};
++	power-supplies = <&pmi8998_charger>;
++	status = "okay";
++};

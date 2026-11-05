@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+printf 'Check supported mkinitfs bypass in the live package tool:\n'
+KERNEL_INSTALL_BYPASS=1 mkinitfs > /tmp/polaris-mkinitfs-bypass-check.log 2>&1
+cat /tmp/polaris-mkinitfs-bypass-check.log
+grep -q 'Skipping mkinitfs' /tmp/polaris-mkinitfs-bypass-check.log
+printf '\nEffective automatic flashing setting:\n'
+. /usr/share/misc/source_deviceinfo
+test "$deviceinfo_flash_kernel_on_update" = false
+printf '%s\n' "$deviceinfo_flash_kernel_on_update"
+printf '\nActual boot prefix still test05:\n'
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+actual=$(head -c 29515776 "$dev" | sha256sum)
+printf '%s\n' "$actual"
+test "${actual%% *}" = ac2d4496089a3f7658b8cbdae6b6b364ffe81855b42d4434bf3943198eb1cb95
+printf '\nCurrent GUI sessions/processes:\n'
+loginctl list-sessions --no-pager
+ps -o pid,user,comm,args | grep -E '[p]hoc|[p]hrog|[p]hosh|[g]nome-session|[s]tevia'
+printf '\nRecent compositor and greeter diagnostics:\n'
+journalctl -b -n 250 --no-pager | grep -Ei 'phoc|phrog|phosh|gnome-session|renderer|EGL|failed|error' | tail -70 || true

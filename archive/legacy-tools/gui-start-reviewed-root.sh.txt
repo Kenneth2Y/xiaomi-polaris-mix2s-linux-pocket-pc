@@ -1,0 +1,64 @@
+#!/bin/sh
+# Disable package-trigger boot flashing, then start the vendor greeter on tty7.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+stage=/var/lib/polaris-lab/gui-20261104
+expected=ac2d4496089a3f7658b8cbdae6b6b364ffe81855b42d4434bf3943198eb1cb95
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+actual=$(head -c 29515776 "$dev" | sha256sum); test "${actual%% *}" = "$expected"
+printf 'Disable automatic boot flashing through supported deviceinfo override:\n'
+if test -e /etc/deviceinfo; then
+ test -e "$stage/deviceinfo.before" || cp -p /etc/deviceinfo "$stage/deviceinfo.before"
+else
+ touch "$stage/deviceinfo.was-absent"
+fi
+if ! grep -q '^# polaris-lab: keep tested boot image independent' /etc/deviceinfo 2>/dev/null; then
+ printf '\n# polaris-lab: keep tested boot image independent of package triggers.\ndeviceinfo_flash_kernel_on_update="false"\n' >> /etc/deviceinfo
+fi
+chmod 644 /etc/deviceinfo
+# Read through the same vendor loader boot-deploy actually uses.
+if test -f /usr/share/misc/source_deviceinfo; then
+ . /usr/share/misc/source_deviceinfo
+else
+ . /usr/share/deviceinfo/deviceinfo
+ . /etc/deviceinfo
+fi
+test "$deviceinfo_flash_kernel_on_update" = false
+printf 'effective deviceinfo_flash_kernel_on_update=%s\n' "$deviceinfo_flash_kernel_on_update"
+printf '\nConfigure 1080x2160 panel at 3x scale (360x720 logical):\n'
+install -d -m 755 /etc/phosh /etc/phrog /etc/systemd/system/greetd.service.d
+for dir in phosh phrog; do
+ f="/etc/$dir/phoc.ini"
+ if test -e "$f"; then
+  test -e "$stage/$dir-phoc.ini.before" || cp -p "$f" "$stage/$dir-phoc.ini.before"
+ else
+  touch "$stage/$dir-phoc.ini.was-absent"
+ fi
+ printf '[output:DSI-1]\nscale = 3\n' > "$f"
+done
+# The stock unit conflicts with tty1 even when config selects tty7. Preserve tty1.
+cat > /etc/systemd/system/greetd.service.d/50-polaris.conf <<'UNIT'
+[Unit]
+After=
+After=systemd-user-sessions.service plymouth-quit-wait.service
+Conflicts=
+
+[Service]
+ExecStart=
+ExecStart=greetd -c /etc/phrog/greetd-config.toml
+UNIT
+systemctl daemon-reload
+systemctl unmask --runtime greetd.service
+printf '\nStart Phrog on tty7 without reboot:\n'
+systemctl start greetd.service
+sleep 8
+printf '\nGreeter service status:\n'
+systemctl status greetd.service --no-pager -l | head -45
+printf '\nSession processes:\n'
+ps -o pid,user,comm,args | grep -E '[p]hoc|[p]hrog|[p]hosh|[g]nome-session|[s]tevia'
+printf '\nActive VT:\n'; cat /sys/class/tty/tty0/active
+printf '\nGreeter logs:\n'
+journalctl -b -u greetd.service -t phrog --no-pager -n 70
+printf '\nSource controller remains off; charger input:\n'
+test ! -d /sys/module/qcom_pmic_typec_smb2
+cat /sys/class/power_supply/pmi8998-charger/current_now /sys/class/power_supply/qcom-battery/capacity

@@ -1,0 +1,33 @@
+#!/bin/sh
+# Verify the candidate without enabling any new USB power/Type-C driver.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+actual=$(head -c 29515776 "$dev" | sha256sum)
+test "${actual%% *}" = ac2d4496089a3f7658b8cbdae6b6b364ffe81855b42d4434bf3943198eb1cb95
+printf 'Actual boot prefix verified: %s\n' "${actual%% *}"
+printf '\nPower/Type-C modules must remain unloaded:\n'
+for m in qcom_pmic_typec_smb2 qcom_smbx qcom_usb_vbus_regulator; do
+    if test -d "/sys/module/$m"; then
+        printf 'Unexpected module already loaded: %s\n' "$m"; exit 1
+    fi
+    printf '%s: unloaded\n' "$m"
+done
+printf '\nUSB role interface:\n'
+for p in /sys/class/usb_role/*/role; do test ! -r "$p" || { printf '%s: ' "$p"; cat "$p"; }; done
+printf '\nBattery observations:\n'
+for d in /sys/class/power_supply/*; do
+    test -d "$d" || continue
+    printf '%s\n' "${d##*/}"
+    for f in capacity voltage_now current_now temp status health; do
+        test ! -r "$d/$f" || { printf '%s=' "$f"; cat "$d/$f"; }
+    done
+done
+printf '\nRelevant kernel diagnostics:\n'
+dmesg | grep -Ei 'module verification|signature|pmi8998|smb2|dwc3|xhci|type.?c|DCS|hw init failed' || true
+printf '\nDeferred devices:\n'
+cat /sys/kernel/debug/devices_deferred 2>/dev/null || true
+printf '\nWi-Fi and font:\n'
+nmcli -f GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS device show wlan0
+systemctl is-active systemd-vconsole-setup.service

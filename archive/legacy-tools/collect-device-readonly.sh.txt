@@ -1,0 +1,54 @@
+#!/bin/sh
+# Send over SSH stdin: no remote files created, no writes to sysfs.
+set +e
+printf '\n[system]\n'
+date -Iseconds
+uname -a
+id
+cat /etc/os-release
+tr '\000' '\n' < /proc/device-tree/model
+cat /proc/cmdline
+printf '\n[mounts]\n'
+cat /proc/mounts | grep -E ' / | /boot '
+printf '\n[failed-units]\n'
+systemctl --failed --no-pager
+printf '\n[kernel-log]\n'
+dmesg
+printf '\n[display]\n'
+ls -l /dev/dri /dev/fb0
+for f in /sys/class/drm/card*-DSI-*/status /sys/class/drm/card*-DSI-*/enabled /sys/class/drm/card*-DSI-*/modes /sys/class/backlight/*/brightness /sys/class/backlight/*/actual_brightness /sys/class/backlight/*/max_brightness /sys/class/backlight/*/bl_power; do
+    [ -r "$f" ] && { printf '%s: ' "$f"; cat "$f"; }
+done
+printf '\n[input]\n'
+cat /proc/bus/input/devices
+ls -l /dev/input
+printf '\n[usb-role-and-enumeration]\n'
+for f in /sys/class/usb_role/*/role /sys/class/typec/*/data_role /sys/class/typec/*/power_role /sys/class/typec/*/port_type /sys/bus/usb/devices/*/product; do
+    [ -r "$f" ] && { printf '%s: ' "$f"; cat "$f"; }
+done
+printf '\n[network]\n'
+ip -brief address
+ip route
+rfkill list
+printf '\n[power-and-temperature]\n'
+for f in /sys/class/power_supply/*/status /sys/class/power_supply/*/capacity /sys/class/power_supply/*/temp /sys/class/power_supply/*/health /sys/class/thermal/thermal_zone*/type /sys/class/thermal/thermal_zone*/temp; do
+    [ -r "$f" ] && { printf '%s: ' "$f"; cat "$f"; }
+done
+printf '\n[firmware-and-initramfs-config]\n'
+ls -lL /lib/firmware/qcom/sdm845/Xiaomi/polaris/a630_zap.mbn /lib/firmware/qcom/sdm845/polaris/a630_zap.mbn
+cat /etc/mkinitfs/files/40-polaris-gpu-fix.files
+cat /usr/share/mkinitfs/files/30-gpu-firmware.files
+cat /usr/share/deviceinfo/deviceinfo
+printf '\n[boot-files-and-partition-size]\n'
+ls -lh /boot
+sha256sum /boot/boot.img /boot/vmlinuz /boot/initramfs
+for name in boot boot_a boot_b; do
+    dev=$(readlink -f "/dev/disk/by-partlabel/$name")
+    if [ -b "$dev" ]; then
+        printf '%s -> %s\n' "$name" "$dev"
+        cat "/sys/class/block/${dev##*/}/size"
+    fi
+done
+printf '\n[modem-unit-log]\n'
+journalctl -b -u msm-modem-uim-selection.service --no-pager -n 60
+printf '\n[read-only-collection-complete]\n'

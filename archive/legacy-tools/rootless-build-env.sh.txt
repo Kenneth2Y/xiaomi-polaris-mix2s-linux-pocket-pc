@@ -1,0 +1,26 @@
+#!/bin/bash
+# Reuse the existing pmbootstrap tools without sudo or writing its chroot.
+set -euo pipefail
+project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+native=/home/dvd/.local/var/pmbootstrap/chroot_native
+state="$project/build/rootless"
+mkdir -p "$state/upper" "$state/work" "$state/root" "$project/build/tmp" "$project/build/home"
+exec 9>"$state/lock"
+flock -n 9 || { echo 'Rootless build environment is already in use.' >&2; exit 1; }
+export POLARIS_PROJECT="$project" POLARIS_NATIVE="$native" POLARIS_STATE="$state"
+exec unshare --user --map-root-user --mount --pid --fork /bin/bash -eu -c '
+    mount --make-rprivate /
+    mount -t overlay overlay -o "lowerdir=$POLARIS_NATIVE,upperdir=$POLARIS_STATE/upper,workdir=$POLARIS_STATE/work" "$POLARIS_STATE/root"
+    mount -t tmpfs tmpfs "$POLARIS_STATE/root/mnt"
+    mkdir -p "$POLARIS_STATE/root/mnt/project"
+    mount --bind "$POLARIS_PROJECT" "$POLARIS_STATE/root/mnt/project"
+    mount --bind "$POLARIS_PROJECT/build/tmp" "$POLARIS_STATE/root/tmp"
+    mount -t proc proc "$POLARIS_STATE/root/proc"
+    # Preserve per-device sandbox mounts and their access restrictions.
+    mount --rbind /dev "$POLARIS_STATE/root/dev"
+    exec chroot "$POLARIS_STATE/root" /usr/bin/env -i \
+        PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/mnt/project/build/home \
+        LC_ALL=C TZ=Asia/Shanghai SOURCE_DATE_EPOCH=1793750400 \
+        KBUILD_BUILD_USER=polaris KBUILD_BUILD_HOST=rootless \
+        /bin/sh -eu -c '\''mkdir -p "$HOME"; cd /mnt/project; exec "$@"'\'' sh "$@"
+' bash "$@"

@@ -1,0 +1,48 @@
+#!/bin/sh
+# Explicit verified boot-only deployment under the user's autonomous flashing authorization.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+oldhash=ac2d4496089a3f7658b8cbdae6b6b364ffe81855b42d4434bf3943198eb1cb95
+newhash=e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+test ! -d /sys/module/qcom_pmic_typec_smb2
+test -f /usr/lib/modules/7.1.0-rc1-sdm845-polaris-test06/modules.dep.bin
+test "$(cat /sys/class/power_supply/pmi8998-charger/online)" = 1
+test "$(cat /sys/class/power_supply/pmi8998-charger/current_now)" -gt 0
+test "$(cat /sys/class/power_supply/qcom-battery/capacity)" -ge 15
+test "$(cat /sys/class/power_supply/qcom-battery/temp)" -lt 400
+. /usr/share/misc/source_deviceinfo
+test "$deviceinfo_flash_kernel_on_update" = false
+grep -qx 'blacklist qcom_pmic_typec_smb2' /etc/modprobe.d/polaris-usb-test04.conf
+stage=/var/lib/polaris-lab/test06-20261105
+install -d -m 700 "$stage"
+install -m 600 /tmp/polaris-test06-boot-20261105.img "$stage/boot-test06.img"
+test "$(stat -c %s "$stage/boot-test06.img")" = 29515776
+actual=$(sha256sum "$stage/boot-test06.img"); test "${actual%% *}" = "$newhash"
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+test -b "$dev"
+test "$(blockdev --getsize64 "$dev")" = 67108864
+actual=$(head -c 29515776 "$dev" | sha256sum); test "${actual%% *}" = "$oldhash"
+test ! -e "$stage/boot-partition-before.bin"
+dd if="$dev" of="$stage/boot-partition-before.bin" bs=4M
+chmod 600 "$stage/boot-partition-before.bin"
+actual=$(head -c 29515776 "$stage/boot-partition-before.bin" | sha256sum); test "${actual%% *}" = "$oldhash"
+cp -p /usr/local/libexec/polaris-charger-test05 "$stage/charger-helper.before"
+cp -p /etc/systemd/system/polaris-charger-test05.service "$stage/charger-service.before"
+# Permit the tested charger-only fallback on the candidate too, still initially 500mA.
+sed 's|test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05|case "$(uname -r)" in 7.1.0-rc1-sdm845-polaris-test05\|7.1.0-rc1-sdm845-polaris-test06) ;; *) exit 1 ;; esac|' \
+ "$stage/charger-helper.before" > /usr/local/libexec/polaris-charger-test05
+chmod 755 /usr/local/libexec/polaris-charger-test05
+sed 's|^ConditionKernelVersion=.*|ConditionKernelVersion=\|7.1.0-rc1-sdm845-polaris-test05\nConditionKernelVersion=\|7.1.0-rc1-sdm845-polaris-test06|' \
+ "$stage/charger-service.before" > /etc/systemd/system/polaris-charger-test05.service
+sh -n /usr/local/libexec/polaris-charger-test05
+systemctl daemon-reload
+systemd-analyze verify polaris-charger-test05.service greetd.service
+printf '\nWriting only verified test06 boot image:\n'
+dd if="$stage/boot-test06.img" of="$dev" bs=4M conv=fsync
+sync
+actual=$(head -c 29515776 "$dev" | sha256sum)
+printf 'Actual boot prefix after write: %s\n' "$actual"
+test "${actual%% *}" = "$newhash"
+printf '\nCandidate verified on boot; Type-C autoload remains disabled. Reboot normally.\n'
+systemctl reboot

@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+export http_proxy=http://<本地代理> https_proxy=http://<本地代理>
+export HTTP_PROXY="$http_proxy" HTTPS_PROXY="$https_proxy" KERNEL_INSTALL_BYPASS=1
+. /usr/share/misc/source_deviceinfo
+test "$deviceinfo_flash_kernel_on_update" = false
+printf 'Simulate essential desktop apps, screenshot verification and Chinese glyph support:\n'
+apk --preserve-env --no-interactive --no-progress --timeout 20 add --simulate epiphany nautilus grim font-noto-cjk gnome-backgrounds

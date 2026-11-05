@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+export http_proxy=http://<本地代理> https_proxy=http://<本地代理>
+export HTTP_PROXY="$http_proxy" HTTPS_PROXY="$https_proxy"
+printf 'Official signed index refresh via user-provided proxy:\n'
+timeout 150 apk --no-progress --timeout 20 update
+printf '\nCandidate package versions:\n'
+apk --no-network policy phosh phoc phosh-osk-stub phosh-osk-stevia foot greetd-phrog mesa-demos mesa-utils
+printf '\nInstallation simulation only:\n'
+apk --no-network add --simulate phosh phosh-osk-stub foot greetd-phrog mesa-demos

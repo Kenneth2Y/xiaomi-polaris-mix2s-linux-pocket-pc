@@ -1,0 +1,22 @@
+#!/bin/sh
+# Diagnostic metadata only: never print connection secrets or full keyfiles.
+set -eu
+export SYSTEMD_PAGER=cat PAGER=cat NM_CLI_PAGER=cat TERM=dumb
+printf 'NetworkManager and supplicant journal:\n'
+journalctl -b -u NetworkManager.service -u wpa_supplicant.service -n 160 --no-pager -o short-monotonic
+printf '\nKernel wireless messages:\n'
+dmesg | grep -E 'ath10k|wlan0|cfg80211|firmware crashed' || true
+printf '\nPublic profile flags:\n'
+for profile in polaris-<5GHz热点> polaris-<2.4GHz热点>; do
+    nmcli -f connection.id,connection.autoconnect,802-11-wireless.ssid,802-11-wireless-security.psk-flags connection show "$profile"
+done
+printf '\nPersistent Wi-Fi secret presence (values never printed):\n'
+for file in /etc/NetworkManager/system-connections/*; do
+    test -f "$file" || continue
+    if grep -q '^id=polaris-PWM_' "$file"; then
+        if grep -Eq '^(psk|password|password-raw)=' "$file"; then
+            printf 'FAIL: secret field exists in a project Wi-Fi keyfile\n'; exit 1
+        fi
+        printf 'PASS: no persistent secret field in project Wi-Fi keyfile\n'
+    fi
+done

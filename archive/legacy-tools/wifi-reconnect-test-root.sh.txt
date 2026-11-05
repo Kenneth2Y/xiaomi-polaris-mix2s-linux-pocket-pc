@@ -1,0 +1,9 @@
+#!/bin/sh
+# Disconnect/reconnect is intentionally owned by systemd, outside this SSH PTY.
+set -eu
+test "$(nmcli -g GENERAL.CONNECTION device show wlan0)" = polaris-<2.4GHz热点>
+test "$(systemctl is-active polaris-wifi-autoconnect.timer)" = active
+test "$(systemctl show -p Result --value polaris-wifi-autoconnect.service)" = success
+systemd-run --collect --unit=polaris-wifi-reconnect-test --on-active=4s \
+    /bin/sh -eu -c 'nmcli --wait 10 connection down id polaris-<2.4GHz热点>; systemctl start polaris-wifi-autoconnect.service'
+printf 'Scheduled independent disconnect/reconnect test in 4 seconds.\n'

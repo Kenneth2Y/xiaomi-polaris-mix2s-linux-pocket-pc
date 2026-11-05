@@ -1,0 +1,28 @@
+Subject: [EXPERIMENT] msm: dsi: test digital-top power with PLL bias
+
+Preserves the two-line handoff experiment. NOT selected for test01.
+Hardware unverified. An analogous 7nm change has a reported boot regression.
+Do not deploy until the PLL/PHY lifetime and rollback path are verified.
+
+---
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_10nm.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_10nm.c
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_10nm.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_10nm.c
+@@ -303,7 +303,7 @@
+ 	u32 data = readl(pll->phy->base + REG_DSI_10nm_PHY_CMN_CTRL_0);
+ 
+ 	writel(0, pll->phy->pll_base + REG_DSI_10nm_PHY_PLL_SYSTEM_MUXES);
+-	writel(data & ~BIT(5), pll->phy->base + REG_DSI_10nm_PHY_CMN_CTRL_0);
++	writel(data & ~(BIT(6) | BIT(5)), pll->phy->base + REG_DSI_10nm_PHY_CMN_CTRL_0);
+ 	ndelay(250);
+ }
+ 
+@@ -311,7 +311,7 @@
+ {
+ 	u32 data = readl(pll->phy->base + REG_DSI_10nm_PHY_CMN_CTRL_0);
+ 
+-	writel(data | BIT(5), pll->phy->base + REG_DSI_10nm_PHY_CMN_CTRL_0);
++	writel(data | BIT(6) | BIT(5), pll->phy->base + REG_DSI_10nm_PHY_CMN_CTRL_0);
+ 	writel(0xc0, pll->phy->pll_base + REG_DSI_10nm_PHY_PLL_SYSTEM_MUXES);
+ 	ndelay(250);
+ }

@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""Use cached Clang/LLD and kernel nolibc to build a static ARM64 USB input monitor."""
+from pathlib import Path
+import subprocess
+
+root = Path(__file__).resolve().parent.parent
+native = Path("/home/dvd/.local/var/pmbootstrap/chroot_native")
+kernel = root / "kernel-src/linux-sdm845-7.1-rc1-r0"
+loader = [str(native / "lib/ld-musl-x86_64.so.1"), "--library-path",
+          f"{native}/usr/lib:{native}/lib"]
+output = root / "build/usb-input-readonly"
+args = loader + [str(native / "usr/lib/llvm23/bin/clang"), "--no-default-config",
+                 "--target=aarch64-linux-musl", "-Os", "-ffreestanding", "-fno-builtin",
+                 "-fno-stack-protector", "-fno-asynchronous-unwind-tables", "-nostdlib",
+                 "-Wall", "-Werror", "-include", str(kernel / "tools/include/nolibc/nolibc.h")]
+for include in ("tools/include/nolibc", "arch/arm64/include/uapi",
+                "arch/arm64/include/generated/uapi"):
+    args += ["-I", str(kernel / include)]
+# Generated arm64 UAPI headers are available in the separate clean build.
+args += ["-I", str(root / "build/recipe/src/linux-sdm845-7.1-rc1-r0/arch/arm64/include/generated/uapi")]
+# Use installed, sanitized generic UAPI headers after the ARM64 asm overrides.
+args += ["-I", str(native / "usr/include")]
+subprocess.run(args + ["-c", str(root / "tools/usb-input-readonly.c"), "-o", str(output) + ".o"], check=True)
+subprocess.run(loader + [str(native / "usr/bin/ld.lld"), "-m", "aarch64elf", "-static",
+                         "-e", "_start", str(output) + ".o", "-o", str(output)], check=True)
+subprocess.run(["readelf", "-h", "-l", str(output)], check=True)

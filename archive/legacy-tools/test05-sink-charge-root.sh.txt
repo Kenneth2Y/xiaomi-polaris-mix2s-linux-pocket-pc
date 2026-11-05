@@ -1,0 +1,41 @@
+#!/bin/sh
+# Verify no-PD sink behavior before allowing this driver at boot.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+test ! -d /sys/module/qcom_pmic_typec_smb2
+test "$(cat /sys/class/power_supply/qcom-battery/temp)" -lt 450
+test "$(cat /sys/class/power_supply/pmi8998-charger/online)" = 1
+cleanup() {
+ rc=$?
+ if test "$rc" -ne 0; then
+  echo 'Sink verification failed: unload controller and restore conservative input.'
+  modprobe -r qcom_pmic_typec_smb2 || true
+  modprobe qcom_smbx || true
+  sleep 2
+  printf '500000\n' > /sys/class/power_supply/pmi8998-charger/current_max || true
+  printf 'Charging\n' > /sys/class/power_supply/pmi8998-charger/status || true
+ fi
+}
+trap cleanup EXIT
+modprobe qcom_pmic_typec_smb2 source_otg_ready=1
+sleep 8
+for i in 1 2 3; do
+ printf '\nSINK SAMPLE %s\n' "$i"
+ printf 'data_role='; cat /sys/class/usb_role/a600000.usb-role-switch/role
+ printf 'power_role='; cat /sys/class/typec/port0/power_role
+ for f in online status voltage_now current_now current_max; do printf 'charger.%s=' "$f"; cat "/sys/class/power_supply/pmi8998-charger/$f"; done
+ for f in capacity voltage_now current_now temp; do printf 'battery.%s=' "$f"; cat "/sys/class/power_supply/qcom-battery/$f"; done
+ for d in /sys/class/regulator/regulator*; do
+  test -r "$d/name" || continue
+  test "$(cat "$d/name")" = polaris-usb-vbus || continue
+  printf 'source_vbus='; cat "$d/state"
+  test "$(cat "$d/state")" = disabled
+ done
+ test "$i" = 3 || sleep 8
+done
+test "$(cat /sys/class/usb_role/a600000.usb-role-switch/role)" = device
+grep -q '\[sink\]' /sys/class/typec/port0/power_role
+test "$(cat /sys/class/power_supply/pmi8998-charger/online)" = 1
+test "$(cat /sys/class/power_supply/pmi8998-charger/current_max)" -gt 0
+printf '\nSink role/charging checks passed; controller stays loaded.\n'

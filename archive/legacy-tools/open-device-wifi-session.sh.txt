@@ -1,0 +1,20 @@
+#!/bin/bash
+# Authenticate the Wi-Fi address against the phone's existing trusted USB key.
+set -euo pipefail
+project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+wifi_ip=${1:?Specify the phone IPv4 address shown by NetworkManager}
+python3 -B - "$wifi_ip" <<'PY'
+import ipaddress,sys
+address=ipaddress.IPv4Address(sys.argv[1])
+if not address.is_private or address.is_loopback or address.is_link_local or address in ipaddress.ip_network('172.16.0.0/16'):
+    raise SystemExit('Expected a private LAN IPv4 address, separate from USB.')
+PY
+mkdir -p "$project/build/ssh"
+chmod 700 "$project/build/ssh"
+ssh -F /dev/null -M -S "$project/build/ssh/wifi-control" -N -f \
+    -o ControlPersist=30m -o StrictHostKeyChecking=yes \
+    -o HostKeyAlias=172.16.42.1 \
+    -o UserKnownHostsFile=<用户目录>/.ssh/known_hosts \
+    -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+    "user@$wifi_ip"
+printf '%s\n' "$wifi_ip" > "$project/build/ssh/wifi-address"

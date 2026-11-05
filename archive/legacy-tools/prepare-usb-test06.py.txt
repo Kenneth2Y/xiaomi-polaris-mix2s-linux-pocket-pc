@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Prepare independent test06: default sink current, FG status, bounded DCP input."""
+from pathlib import Path
+import difflib
+import hashlib
+import shutil
+import subprocess
+
+root = Path(__file__).resolve().parent.parent
+recipe = root / 'build/recipe-test06'
+old_recipe = root / 'build/recipe-test05'
+kernel = recipe / 'src/linux-sdm845-7.1-rc1-r0'
+assert kernel.is_dir()
+# Reset only our edited files from immutable test05 after the full copy completed.
+for rel in ('drivers/power/supply/pmi8998_fg.c',
+            'drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c',
+            'arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts'):
+    shutil.copyfile(old_recipe/'src/linux-sdm845-7.1-rc1-r0'/rel, kernel/rel)
+patches = ['0010-pmi8998-fg-fallback-current-sign.patch',
+           '0011-polaris-smb2-default-sink-current.patch']
+for name in patches:
+    subprocess.run(['patch', '-p1', '--batch', '--forward', '-i', str(root/'patches'/name)],
+                   cwd=kernel, check=True)
+    shutil.copyfile(root/'patches'/name, recipe/name)
+
+changes = {}
+def change(rel, new):
+    p = kernel / rel
+    changes[rel] = (p.read_text(), new)
+    p.write_text(new)
+
+rel = 'drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c'
+text = (kernel/rel).read_text()
+needle = '''\tcase POWER_SUPPLY_USB_TYPE_DCP:
+\tcase POWER_SUPPLY_USB_TYPE_CDP:
+\t\t/* Keep the polaris experiment below 500 mA, even on a DCP. */
+\t\treturn 500;'''
+assert text.count(needle) == 1
+text = text.replace(needle, '''\tcase POWER_SUPPLY_USB_TYPE_DCP:
+\t\t/* Dedicated charger only; no PD or voltage negotiation. */
+\t\treturn 1000;
+\tcase POWER_SUPPLY_USB_TYPE_CDP:
+\t\treturn 500;''')
+change(rel, text)
+
+rel = 'arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts'
+text = (kernel/rel).read_text()
+text = text.replace('/* OEM ATL/COS profiles: 4.4 V. Initial wired tests cap current to 0.5 A. */',
+                    '/* OEM ATL/COS profiles: 4.4 V. Test06 caps battery current to 0.75 A. */')
+assert text.count('constant-charge-current-max-microamp = <500000>;') == 1
+text = text.replace('constant-charge-current-max-microamp = <500000>;',
+                    'constant-charge-current-max-microamp = <750000>;')
+assert text.count('input-current-limit-microamp = <500000>;') == 1
+text = text.replace('input-current-limit-microamp = <500000>;',
+                    'input-current-limit-microamp = <1000000>;')
+needle = '&pmi8998_fg {\n\tstatus = "okay";\n};'
+assert text.count(needle) == 1
+text = text.replace(needle, '&pmi8998_fg {\n\tpower-supplies = <&pmi8998_charger>;\n\tstatus = "okay";\n};')
+# Never change the independently constrained 500mA OTG source.
+assert 'regulator-min-microamp = <500000>;' in text
+assert 'regulator-max-microamp = <500000>;' in text
+change(rel, text)
+
+patch = '''From: Polaris Lab <polaris@localhost>
+Subject: [PATCH] arm64: dts: polaris: bound dedicated charging and link FG
+
+The user provided a 5 V / 2 A supply which is detected as a BC1.2 DCP.
+Allow at most 1 A USB input for a DCP and 750 mA battery fast charging,
+well below the original 3.3 A battery profile. CDP remains 500 mA;
+unknown/unconfigured SDP is limited to one 100 mA USB2 unit. No PD,
+higher voltage, or increase to the 500 mA OTG source limit is enabled.
+
+Link the fuel gauge to the real charger supply for status reporting.
+The corrected current fallback is retained for systems without a link.
+These limits require independent hardware verification before autoload.
+
+Signed-off-by: Polaris Lab <polaris@localhost>
+---
+'''
+for rel,(before,after) in changes.items():
+    patch += 'diff --git a/'+rel+' b/'+rel+'\n'
+    patch += ''.join(difflib.unified_diff(before.splitlines(True),after.splitlines(True),
+                                        fromfile='a/'+rel,tofile='b/'+rel))
+name = '0012-polaris-bounded-dcp-charge-test06.patch'
+(root/'patches'/name).write_text(patch)
+(recipe/name).write_text(patch)
+patches.append(name)
+config = recipe/'config-postmarketos-qcom-sdm845.aarch64'
+config.write_text((old_recipe/config.name).read_text().replace('polaris-test05"', 'polaris-test06"'))
+shutil.copyfile(config, kernel/'.config')
+text = (old_recipe/'APKBUILD').read_text().replace('pkgrel=9\n', 'pkgrel=10\n')
+needle = '\t0009-polaris-pmi8998-boost-start-test05.patch\n'
+assert text.count(needle) == 1
+text = text.replace(needle,needle+''.join('\t'+name+'\n' for name in patches))
+lines = text.splitlines(True)
+for i,line in enumerate(lines):
+    if line.endswith('  '+config.name+'\n'):
+        lines[i] = hashlib.sha512(config.read_bytes()).hexdigest()+'  '+config.name+'\n'
+text = ''.join(lines)
+assert text.endswith('"\n')
+text = text[:-2]+''.join(hashlib.sha512((recipe/name).read_bytes()).hexdigest()+'  '+name+'\n' for name in patches)+'"\n'
+(recipe/'APKBUILD').write_text(text)
+print('Prepared independent test06: DCP <=1A input, battery <=750mA, OTG remains 500mA, no PD.')

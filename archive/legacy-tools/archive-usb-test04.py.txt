@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Freeze public build artifacts and a strictly scoped module archive."""
+from pathlib import Path
+from compression import zstd
+import hashlib
+import io
+import json
+import shutil
+import tarfile
+from candidate_paths import candidate
+
+paths = candidate(default="test04")
+root, source, package, release = paths["root"], paths["source"], paths["package"], paths["release"]
+recipe = source.parent.parent
+prefix = Path("usr/lib/modules") / release
+modules = package / prefix
+output = paths["artifacts"]
+output.mkdir(parents=True, exist_ok=True)
+report = json.loads((root / "logs" / (paths["profile"] + "-artifact-validation.json")).read_text())
+assert report["module_signatures_cryptographically_verified"] == 24
+count = 0
+for p in modules.rglob("*"):
+    if p.is_symlink() or not (p.is_file() or p.is_dir()):
+        raise SystemExit(f"Unexpected archive entry: {p}")
+    if p.name.endswith(".ko.zst"):
+        data = zstd.decompress(p.read_bytes())
+        if b"vermagic=" + release.encode() + b" " not in data or not data.endswith(b"~Module signature appended~\n"):
+            raise SystemExit(f"Unsigned or wrong release module: {p}")
+        count += 1
+assert count == 1156, count
+archive = output / (paths["profile"] + "-modules.tar")
+with tarfile.open(archive, "x", format=tarfile.USTAR_FORMAT) as tar:
+    for p in sorted(modules.rglob("*")):
+        if not p.is_file():
+            continue
+        data = p.read_bytes()
+        info = tarfile.TarInfo(p.relative_to(package).as_posix())
+        info.size, info.mode, info.uid, info.gid, info.mtime = len(data), 0o644, 0, 0, 1793750400
+        tar.addfile(info, io.BytesIO(data))
+with tarfile.open(archive) as tar:
+    for member in tar.getmembers():
+        assert member.isfile() and member.name.startswith(prefix.as_posix() + "/")
+        assert ".." not in Path(member.name).parts and not member.name.startswith("/")
+for src, name in [(package / "boot/vmlinuz", "vmlinuz"),
+                  (package / "boot/dtbs/qcom/sdm845-xiaomi-polaris.dtb", "sdm845-xiaomi-polaris.dtb"),
+                  (source / ".config", "config"), (source / "Module.symvers", "Module.symvers"),
+                  (source / "certs/signing_key.x509", "module-signing-cert.der"),
+                  (recipe / "APKBUILD", "APKBUILD"),
+                  (recipe / "config-postmarketos-qcom-sdm845.aarch64", "config-seed"),
+                  (paths["image"].with_suffix(".json"), paths["image"].with_suffix(".json").name)]:
+    shutil.copyfile(src, output / name)
+for p in recipe.glob("*.patch"):
+    shutil.copyfile(p, output / p.name)
+manifest = {"kernel_release": release, "modules": count, "archive": archive.name,
+            "archive_bytes": archive.stat().st_size,
+            "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "private_keys_or_credentials_archived": False,
+            "module_archive_scope": prefix.as_posix(), "image_validation": report}
+(output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+(output / "SHA256SUMS").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.name + "\n"
+        for p in sorted(output.iterdir()) if p.is_file() and p.name != "SHA256SUMS"))
+print(json.dumps(manifest, indent=2))

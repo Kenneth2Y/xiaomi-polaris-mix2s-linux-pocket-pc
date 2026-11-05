@@ -1,0 +1,116 @@
+#!/bin/sh
+# User-authorized persistent Wi-Fi credentials: encrypted on disk, memory at use.
+# Run ONLY in the user's terminal. Never record stdin, set -x, or print secrets.
+set -eu
+set +x
+umask 077
+ulimit -c 0
+export LC_ALL=C PAGER=cat NM_CLI_PAGER=cat SYSTEMD_PAGER=cat
+profile=polaris-<2.4GHz热点>
+credential=/etc/credstore.encrypted/polaris-wifi-low
+test "$(id -u)" = 0
+test "$(nmcli -g GENERAL.CONNECTION device show wlan0)" = "$profile"
+test "$(nmcli -g 802-11-wireless.ssid connection show "$profile")" = <2.4GHz热点>
+test ! -e "$credential"
+test ! -e /etc/systemd/system/polaris-wifi-autoconnect.service
+test ! -e /etc/systemd/system/polaris-wifi-autoconnect.timer
+test ! -e /usr/local/libexec/polaris-wifi-autoconnect
+flags=$(nmcli -g 802-11-wireless-security.psk-flags connection show "$profile")
+case "$flags" in 2|"2 (not saved)"|"2 (not-saved)") ;; *) echo 'Unexpected secret policy'; exit 1;; esac
+# Only zram is currently used. Refuse a persistent swap device for secret input.
+awk 'NR > 1 && $1 !~ /^\/dev\/zram[0-9]+$/ { bad=1 } END { exit bad }' /proc/swaps
+mkdir -p /etc/credstore.encrypted /usr/local/libexec
+stage=$(mktemp -d /etc/credstore.encrypted/.polaris-wifi-stage.XXXXXX)
+trap 'unset secret recovered; rm -rf "$stage"' EXIT
+printf '请输入 <2.4GHz热点> 的 Wi-Fi 密码；输入不会显示，也不会写入明文文件。\n'
+secret=$(systemd-ask-password --echo=no --emoji=no --timeout=0 '<2.4GHz热点> Wi-Fi password:')
+length=${#secret}
+if test "$length" -lt 8 || test "$length" -gt 64; then
+    echo 'Expected an 8-63 byte passphrase or 64 hexadecimal digits.'; exit 1
+fi
+if test "$length" = 64; then
+    case "$secret" in *[!0-9a-fA-F]*) echo 'A 64-character PSK must be hexadecimal.'; exit 1;; esac
+fi
+# printf is a shell builtin: no secret is passed in an external process argv.
+printf '802-11-wireless-security.psk:%s\n' "$secret" \
+    | systemd-creds --with-key=host --name=polaris-wifi-low --timestamp=@0 encrypt - "$stage/credential"
+recovered=$(systemd-creds --name=polaris-wifi-low decrypt "$stage/credential" -)
+test "$recovered" = "802-11-wireless-security.psk:$secret"
+unset secret recovered
+chmod 600 "$stage/credential"
+mv "$stage/credential" "$credential"
+
+cat > /usr/local/libexec/polaris-wifi-autoconnect <<'HELPER'
+#!/bin/sh
+# NetworkManager receives the secret only through systemd's memory credential.
+set -eu
+set +x
+ulimit -c 0
+export LC_ALL=C PAGER=cat NM_CLI_PAGER=cat
+test -d /sys/class/net/wlan0 || exit 0
+test "$(nmcli radio wifi)" = enabled || exit 0
+state=$(nmcli -g GENERAL.STATE device show wlan0)
+case "$state" in 100*) exit 0;; esac
+flags=$(nmcli -g 802-11-wireless-security.psk-flags connection show polaris-<2.4GHz热点>)
+case "$flags" in 2|"2 (not saved)"|"2 (not-saved)") ;; *) echo 'Unsafe secret flags'; exit 1;; esac
+test -r "$CREDENTIALS_DIRECTORY/polaris-wifi-low"
+exec nmcli --wait 60 connection up id polaris-<2.4GHz热点> ifname wlan0 \
+    passwd-file "$CREDENTIALS_DIRECTORY/polaris-wifi-low"
+HELPER
+chmod 755 /usr/local/libexec/polaris-wifi-autoconnect
+
+cat > /etc/systemd/system/polaris-wifi-autoconnect.service <<'SERVICE'
+[Unit]
+Description=Connect polaris Wi-Fi using an encrypted credential
+Wants=NetworkManager.service
+After=NetworkManager.service
+ConditionPathExists=/etc/credstore.encrypted/polaris-wifi-low
+
+[Service]
+Type=oneshot
+LoadCredentialEncrypted=polaris-wifi-low:/etc/credstore.encrypted/polaris-wifi-low
+ExecStart=/usr/local/libexec/polaris-wifi-autoconnect
+TimeoutStartSec=75
+UMask=0077
+LimitCORE=0
+MemorySwapMax=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+SERVICE
+cat > /etc/systemd/system/polaris-wifi-autoconnect.timer <<'TIMER'
+[Unit]
+Description=Retry polaris Wi-Fi without storing a plaintext password
+
+[Timer]
+OnBootSec=20s
+OnUnitInactiveSec=30s
+AccuracySec=2s
+Unit=polaris-wifi-autoconnect.service
+
+[Install]
+WantedBy=timers.target
+TIMER
+chmod 644 /etc/systemd/system/polaris-wifi-autoconnect.service /etc/systemd/system/polaris-wifi-autoconnect.timer
+sh -n /usr/local/libexec/polaris-wifi-autoconnect
+systemd-analyze verify /etc/systemd/system/polaris-wifi-autoconnect.service /etc/systemd/system/polaris-wifi-autoconnect.timer
+# Keep the current locally administered MAC across boots for a stable DHCP lease.
+# Let the encrypted-credential service handle reconnects, rather than NM asking
+# for an unavailable persistent keyfile secret on its own.
+mac=$(cat /sys/class/net/wlan0/address)
+mkdir -p /var/lib/polaris-wifi
+test ! -e /var/lib/polaris-wifi/public-profile-before.txt
+nmcli -f connection.id,connection.autoconnect,802-11-wireless.cloned-mac-address \
+    connection show "$profile" > /var/lib/polaris-wifi/public-profile-before.txt
+nmcli connection modify "$profile" connection.autoconnect no \
+    802-11-wireless.cloned-mac-address "$mac"
+systemctl daemon-reload
+# This validates the actual systemd decryption/sandbox path without reconnecting.
+systemctl start polaris-wifi-autoconnect.service
+test "$(systemctl show -p Result --value polaris-wifi-autoconnect.service)" = success
+systemctl enable --now polaris-wifi-autoconnect.timer
+test "$(systemctl is-active polaris-wifi-autoconnect.timer)" = active
+printf '\n已加密保存 <2.4GHz热点> 凭据，并启用开机/断线自动连接。当前 Wi-Fi 不会被断开。\n'
+printf '手机 root 可以解密；本机没有 TPM 硬件密封。\n'
+stat -c '%a %U %n' "$credential" /var/lib/systemd/credential.secret

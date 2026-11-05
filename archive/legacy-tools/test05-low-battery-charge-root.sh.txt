@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+printf 'Stop source controller for low-battery charging:\n'
+if test -d /sys/module/qcom_pmic_typec_smb2; then modprobe -r qcom_pmic_typec_smb2; fi
+modprobe qcom_smbx
+modprobe qcom_usb_vbus_regulator
+sleep 2
+for d in /sys/class/regulator/regulator*; do
+ test -r "$d/name" || continue
+ test "$(cat "$d/name")" = polaris-usb-vbus || continue
+ printf 'VBUS='; cat "$d/state"
+ test "$(cat "$d/state")" = disabled
+done
+# Existing charger ABI: STATUS nonzero clears USBIN_SUSPEND. Keep the validated 500mA cap.
+printf '500000\n' > /sys/class/power_supply/pmi8998-charger/current_max
+printf 'Charging\n' > /sys/class/power_supply/pmi8998-charger/status
+printf '\nCharger observations after restoring sink input:\n'
+for f in online status voltage_now current_now current_max health; do
+ printf '%s=' "$f"; cat "/sys/class/power_supply/pmi8998-charger/$f"
+done
+printf '\nBattery observations:\n'
+for f in capacity voltage_now current_now temp status; do
+ printf '%s=' "$f"; cat "/sys/class/power_supply/qcom-battery/$f"
+done
+printf '\nLast charger/Type-C evidence:\n'
+journalctl -k -b --no-pager -o short-monotonic | grep -Ei 'smb2|charger|boost|vbus|battery' | tail -35

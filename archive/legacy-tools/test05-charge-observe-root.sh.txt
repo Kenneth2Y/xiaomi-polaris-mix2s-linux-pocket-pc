@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+test ! -d /sys/module/qcom_pmic_typec_smb2
+printf 'Backlight levels:\n'
+for d in /sys/class/backlight/*; do test -d "$d" || continue; printf '%s ' "$d"; cat "$d/brightness" "$d/max_brightness"; done
+printf '\nLoad:\n'; cat /proc/loadavg
+printf '\nCharging trend (uptime, charger, battery):\n'
+i=0
+while test "$i" -lt 7; do
+ printf '\nSAMPLE %s uptime=' "$i"; cut -d ' ' -f 1 /proc/uptime
+ for f in online status voltage_now current_now current_max health; do printf 'charger.%s=' "$f"; cat "/sys/class/power_supply/pmi8998-charger/$f"; done
+ for f in capacity status voltage_now current_now temp; do printf 'battery.%s=' "$f"; cat "/sys/class/power_supply/qcom-battery/$f"; done
+ i=$((i+1)); test "$i" -eq 7 || sleep 10
+done

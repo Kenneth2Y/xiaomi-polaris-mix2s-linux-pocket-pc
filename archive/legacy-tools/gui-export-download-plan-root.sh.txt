@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+stage=/var/lib/polaris-lab/gui-20261104
+printf 'Verify transaction has not committed before cancelling stalled fetch:\n'
+cmp "$stage/installed.before" /usr/lib/apk/db/installed
+if test -r /proc/9642/cmdline && tr '\0' ' ' < /proc/9642/cmdline | grep -q 'apk --no-progress --timeout 30 add phosh'; then
+ kill -TERM 9642
+ sleep 2
+fi
+printf '\nExact new package URLs from the reviewed transaction:\n'
+awk '{for(i=1;i<=NF;i++) if($i=="Installing") {v=$(i+2); gsub(/[()]/,"",v); print $(i+1) "=" v;}}' "$stage/plan.log" > "$stage/new-packages.txt"
+test "$(wc -l < "$stage/new-packages.txt")" -gt 300
+xargs apk --no-progress fetch --url < "$stage/new-packages.txt" > /tmp/polaris-gui-urls-20261104.txt
+chmod 644 /tmp/polaris-gui-urls-20261104.txt
+wc -l "$stage/new-packages.txt" /tmp/polaris-gui-urls-20261104.txt
+printf '\nInstalled database still unchanged:\n'
+cmp "$stage/installed.before" /usr/lib/apk/db/installed

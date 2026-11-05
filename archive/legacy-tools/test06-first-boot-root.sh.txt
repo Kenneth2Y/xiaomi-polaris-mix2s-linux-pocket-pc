@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test06
+printf 'Running release: '; uname -r
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+actual=$(head -c 29515776 "$dev" | sha256sum)
+printf 'Actual boot prefix: %s\n' "$actual"
+test "${actual%% *}" = e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce
+printf '\nType-C remains manually gated:\n'; test ! -d /sys/module/qcom_pmic_typec_smb2 && echo unloaded
+printf '\nPersisted services:\n'
+systemctl is-active greetd.service getty@tty2.service polaris-charger-test05.service
+printf '\nNew charging DT limits (big-endian bytes):\n'
+for f in /sys/firmware/devicetree/base/soc@0/spmi@c440000/pmic@2/charger@1000/input-current-limit-microamp /sys/firmware/devicetree/base/battery/constant-charge-current-max-microamp; do printf '%s: ' "$f"; od -An -tx1 "$f"; done
+test -e /sys/firmware/devicetree/base/soc@0/spmi@c440000/pmic@2/fuel-gauge@4000/power-supplies || true
+printf '\nPower supplies:\n'
+for d in /sys/class/power_supply/*; do
+ printf '%s\n' "${d##*/}"
+ for f in usb_type online status capacity voltage_now current_now current_max temp; do test ! -r "$d/$f" || { printf '%s=' "$f"; cat "$d/$f"; }; done
+done
+printf '\nCritical boot diagnostics:\n'
+dmesg | grep -Ei 'verification failed|unknown symbol|Failed to get charger supply|gpu.*(fault|hang)|DCS|pmi8998|Generation SMB2' | tail -40 || true
+printf '\nDeferred devices:\n'; cat /sys/kernel/debug/devices_deferred || true
+printf '\nGUI processes:\n'; ps -o pid,user,comm,args | grep -E '[p]hoc|[p]hrog|[p]hosh|[s]tevia'
+printf '\nWi-Fi:\n'; nmcli -f GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS device show wlan0

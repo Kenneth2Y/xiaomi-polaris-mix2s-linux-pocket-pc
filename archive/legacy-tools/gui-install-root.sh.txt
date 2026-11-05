@@ -1,0 +1,40 @@
+#!/bin/sh
+# Install only the reviewed graphical package transaction; keep display services stopped.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+export http_proxy=http://<本地代理> https_proxy=http://<本地代理>
+export HTTP_PROXY="$http_proxy" HTTPS_PROXY="$https_proxy"
+export KERNEL_INSTALL_BYPASS=1
+. /usr/share/misc/source_deviceinfo
+test "$deviceinfo_flash_kernel_on_update" = false
+stage=/var/lib/polaris-lab/gui-20261104
+test -f "$stage/world.before"
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+test "$(cat /sys/class/power_supply/pmi8998-charger/online)" = 1
+test "$(cat /sys/class/power_supply/pmi8998-charger/current_max)" -gt 0
+test ! -d /sys/module/qcom_pmic_typec_smb2
+printf 'Rechecking exact transaction before install:\n'
+apk --preserve-env --no-interactive --no-progress --timeout 20 add --simulate phosh phosh-osk-stub foot greetd-phrog mesa-utils > "$stage/plan.log" 2>&1
+if grep -E '\) (Upgrading|Downgrading|Purging) ' "$stage/plan.log"; then
+ echo 'Unexpected replacement/removal: inspect before proceeding.'; exit 1
+fi
+if grep -E '\) Installing (linux-|mkinitfs|boot-deploy|postmarketos-usb-moded)' "$stage/plan.log"; then
+ echo 'Unexpected boot/USB deployment package: inspect before proceeding.'; exit 1
+fi
+grep -E 'Need to download|additional disk space|OK:' "$stage/plan.log"
+# Temporary masks prevent package presets from launching a compositor during installation.
+systemctl mask --runtime greetd.service phosh.service
+printf '\nInstalling reviewed GUI packages from signed official repositories:\n'
+apk --preserve-env --no-interactive --no-progress --timeout 30 add phosh phosh-osk-stub foot greetd-phrog mesa-utils
+printf '\nRecord installed package set:\n'
+apk --no-network info -v > "$stage/packages.after"
+cp -p /etc/apk/world "$stage/world.after"
+printf '\nVerify boot is unchanged:\n'
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+actual=$(head -c 29515776 "$dev" | sha256sum)
+test "${actual%% *}" = ac2d4496089a3f7658b8cbdae6b6b364ffe81855b42d4434bf3943198eb1cb95
+printf '%s\n' "$actual"
+printf '\nInstalled session executables:\n'
+command -v phosh phoc foot stevia phosh-session greetd eglinfo || true
+printf '\nDisplay services remain stopped for configuration:\n'
+systemctl is-active greetd.service phosh.service || true

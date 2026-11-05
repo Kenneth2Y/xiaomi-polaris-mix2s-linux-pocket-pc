@@ -1,0 +1,15 @@
+#!/bin/bash
+# systemd's font-support probe assumes <=32-pixel glyph height. Normalize
+# before that probe, then let the configured 24x48 font be loaded normally.
+set -euo pipefail
+project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+remote_command=$(cat <<'REMOTE'
+sudo -- sh -eu -c 'printf "\nPOLARIS_DMESG_BEGIN\n"; target=/etc/systemd/system/systemd-vconsole-setup.service.d/10-polaris-font-compat.conf; test ! -e "$target"; mkdir -p /etc/systemd/system/systemd-vconsole-setup.service.d; printf "[Service]\nExecStartPre=/usr/sbin/setfont -C /dev/tty1 /usr/share/consolefonts/ter-132b.psf.gz\n" > "$target"; systemctl daemon-reload; systemctl restart systemd-vconsole-setup.service; printf "Font service: "; systemctl is-active systemd-vconsole-setup.service; printf "Console rows/columns: "; stty -F /dev/tty1 size; printf "[config]\n"; cat /etc/vconsole.conf; printf "[drop-in]\n"; cat "$target"'
+REMOTE
+)
+ssh -F /dev/null -tt -S "$project/build/ssh/control" \
+    -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile=<用户目录>/.ssh/known_hosts \
+    -o ConnectTimeout=5 user@172.16.42.1 "$remote_command" \
+    | python3 -B -u "$project/tools/redact-log.py" --auth-until-marker \
+    | tee "$project/logs/test01-font-compat-fix.log"

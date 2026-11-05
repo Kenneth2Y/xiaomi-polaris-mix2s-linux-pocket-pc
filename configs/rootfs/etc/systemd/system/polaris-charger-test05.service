@@ -1,0 +1,14 @@
+[Unit]
+Description=Polaris test05 conservative charger-only initialization
+ConditionKernelVersion=|7.1.0-rc1-sdm845-polaris-test05
+ConditionKernelVersion=|7.1.0-rc1-sdm845-polaris-test06
+After=systemd-udev-trigger.service
+Before=greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/polaris-charger-test05
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,41 @@
+#!/bin/sh
+# Distinguish a failed boost from a source-mode status-bit mismatch.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test04
+test ! -d /sys/module/qcom_pmic_typec_smb2
+modprobe qcom_smbx
+modprobe qcom_usb_vbus_regulator
+sleep 2
+voltage=/sys/class/power_supply/pmi8998-charger/voltage_now
+test "$(cat "$voltage")" -lt 1000000
+test "$(cat /sys/class/power_supply/qcom-battery/temp)" -lt 450
+vbus=
+for d in /sys/class/regulator/regulator*; do
+    test -r "$d/name" || continue
+    test "$(cat "$d/name")" != polaris-usb-vbus || vbus=$d
+done
+test -n "$vbus"
+test "$(cat "$vbus/microamps")" = 500000
+systemd-run --collect --unit=polaris-typec-adc-stop --on-active=25s \
+    /sbin/modprobe -r qcom_pmic_typec_smb2
+trap 'modprobe -r qcom_pmic_typec_smb2 || true; systemctl stop polaris-typec-adc-stop.timer || true' EXIT
+modprobe qcom_pmic_typec_smb2 dyndbg=+p
+i=0
+maximum=0
+enabled=0
+above4v4=0
+while test "$i" -lt 80; do
+    # A provider may be removed by the independent cutoff; stop cleanly.
+    test -r "$voltage" && test -r "$vbus/state" || break
+    sample=$(cat "$voltage")
+    state=$(cat "$vbus/state")
+    test "$state" != enabled || enabled=$((enabled + 1))
+    test "$sample" -lt 4400000 || above4v4=$((above4v4 + 1))
+    if test "$sample" -gt "$maximum"; then maximum=$sample; printf 'New maximum VBUS ADC: %s uV, regulator=%s\n' "$sample" "$state"; fi
+    i=$((i + 1))
+    sleep 0.02
+done
+printf 'ADC summary: samples=%s max_uV=%s regulator_enabled_samples=%s above4v4_samples=%s\n' "$i" "$maximum" "$enabled" "$above4v4"
+dmesg | grep -E 'qcom-pmic-typec-smb2.*(set_vbus|VBUS|registered|get_cc)' | tail -28
+printf 'Stopping bounded ADC attempt.\n'

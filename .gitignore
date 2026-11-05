@@ -1,0 +1,38 @@
+# 构建目录、设备私有状态与下载缓存
+/build/
+/work/
+/downloads/
+/dist/
+/.local/
+/.private/
+/local.env
+/.env
+/.env.*
+!.env.example
+__pycache__/
+*.pyc
+*.partial
+# 编译产物一律放Release或私有备份
+*.img
+*.dtb
+*.ko
+*.ko.zst
+*.o
+*.a
+*.tar
+*.tar.gz
+*.tar.xz
+*.zip
+# 凭据和私钥（公开证书只通过人工白名单管理）
+*.key
+*.p12
+*.pfx
+*.jks
+id_rsa*
+id_ed25519*
+*.pem
+!**/module-signing-cert.pem
+known_hosts*
+credential.secret
+credstore.encrypted/
+*.nmconnection

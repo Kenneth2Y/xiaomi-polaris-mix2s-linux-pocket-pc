@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Check boot components, dependency closure and actual CMS module signatures."""
+from pathlib import Path
+import hashlib
+import json
+import struct
+import subprocess
+import tempfile
+import zlib
+from compression import zstd
+from bootimg import BootImage, module_names, read_cpio, self_check
+from candidate_paths import candidate
+
+paths = candidate()
+root = paths["root"]
+imagepath = paths["image"]
+image = BootImage.parse(imagepath.read_bytes())
+kernel, dtb = image.kernel_and_dtb()
+entries = read_cpio(zstd.decompress(image.ramdisk))
+byname = {e.name: e for e in entries}
+release = paths["release"]
+prefix = "usr/lib/modules/" + release + "/"
+for line in byname[prefix + "modules.dep"].data.decode().splitlines():
+    name, dependencies = line.split(":", 1)
+    for module in [name, *dependencies.split()]:
+        if prefix + module not in byname:
+            raise SystemExit(f"Missing module dependency: {module}")
+certpath = paths["source"] / "certs/signing_key.x509"
+certificate = certpath.read_bytes()
+if certificate not in zlib.decompress(kernel, 16 + zlib.MAX_WBITS):
+    raise SystemExit("Signing certificate absent from kernel image")
+artifactdir = paths["artifacts"]
+artifactdir.mkdir(parents=True, exist_ok=True)
+publiccert = artifactdir / "module-signing-cert.pem"
+subprocess.run(["openssl", "x509", "-inform", "DER", "-in", str(certpath),
+                "-out", str(publiccert)], check=True)
+magic = b"~Module signature appended~\n"
+with tempfile.TemporaryDirectory(dir=root / "build/tmp") as tmp:
+    tmp = Path(tmp)
+    candidates = {name: byname[name].data for name in module_names(entries)}
+    if paths["profile"] in ("test04", "test05", "test06"):
+        modules = paths["package"] / "usr/lib/modules" / release
+        for name in ["kernel/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2.ko.zst",
+                     "kernel/drivers/usb/typec/tcpm/tcpm.ko.zst",
+                     "kernel/drivers/regulator/qcom_usb_vbus-regulator.ko.zst",
+                     "kernel/drivers/power/supply/qcom_smbx.ko.zst",
+                     "kernel/drivers/power/supply/pmi8998_fg.ko.zst"]:
+            candidates[name] = (modules / name).read_bytes()
+    for name, data in candidates.items():
+        raw = zstd.decompress(data)
+        if b"vermagic=" + release.encode() + b" " not in raw:
+            raise SystemExit(f"Module release mismatch: {name}")
+        if not raw.endswith(magic):
+            raise SystemExit(f"Missing signature: {name}")
+        descriptor = raw[-len(magic) - 12:-len(magic)]
+        if descriptor[2] != 2 or descriptor[3:8] != b"\0" * 5:
+            raise SystemExit(f"Unexpected signature format: {name}")
+        size = struct.unpack_from(">I", descriptor, 8)[0]
+        boundary = len(raw) - len(magic) - 12
+        if not 0 < size < boundary:
+            raise SystemExit(f"Invalid signature length: {name}")
+        (tmp / "module").write_bytes(raw[:boundary - size])
+        (tmp / "signature").write_bytes(raw[boundary - size:boundary])
+        verify = subprocess.run(["openssl", "cms", "-verify", "-binary", "-inform", "DER",
+                                 "-in", str(tmp / "signature"), "-content", str(tmp / "module"),
+                                 "-certfile", str(publiccert), "-noverify", "-out", "/dev/null"],
+                                text=True, capture_output=True)
+        if verify.returncode:
+            raise SystemExit(f"Signature verification failed: {name}: {verify.stderr}")
+report = self_check(imagepath)
+report.update({"module_signatures_cryptographically_verified": len(candidates),
+               "module_signing_certificate_embedded_in_kernel": True,
+               "module_dependency_closure": "complete",
+               "kernel_release": release,
+               "image_sha256": hashlib.sha256(imagepath.read_bytes()).hexdigest(),
+               "hardware_boot_test": "not performed"})
+(root / "logs" / (paths["profile"] + "-artifact-validation.json")).write_text(json.dumps(report, indent=2) + "\n")
+print(json.dumps(report, indent=2))

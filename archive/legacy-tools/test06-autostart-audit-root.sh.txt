@@ -1,0 +1,45 @@
+#!/bin/sh
+# Read-only Type-C/VBUS/USB observations; no raw register access.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test06
+printf 'New boot uptime/id:\n'; cat /proc/uptime /proc/sys/kernel/random/boot_id
+printf '\nAutomatic service state:\n'
+systemctl is-active greetd.service polaris-charger-test05.service polaris-usb-role-test06.service getty@tty2.service
+inv=$(systemctl show polaris-usb-role-test06.service -p InvocationID --value)
+test "$inv" != f4e8569b03a5411a911da5027cb432c8
+printf 'New role service invocation: %s\n' "$inv"
+printf '\nActual boot prefix:\n'
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+actual=$(head -c 29515776 "$dev" | sha256sum)
+printf '%s\n' "$actual"
+test "${actual%% *}" = e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce
+printf 'USB data role: '; cat /sys/class/usb_role/a600000.usb-role-switch/role
+printf '\nType-C port:\n'
+for f in data_role power_role port_type power_operation_mode; do
+    printf '%s=' "$f"; cat "/sys/class/typec/port0/$f"
+done
+printf '\nVBUS provider:\n'
+for d in /sys/class/regulator/regulator*; do
+    test -r "$d/name" || continue
+    test "$(cat "$d/name")" = polaris-usb-vbus || continue
+    for f in state status microamps num_users; do
+        test ! -r "$d/$f" || { printf '%s=' "$f"; cat "$d/$f"; }
+    done
+done
+printf '\nCharger observations:\n'
+for f in online voltage_now current_now current_max health status; do
+    test ! -r "/sys/class/power_supply/pmi8998-charger/$f" || { printf '%s=' "$f"; cat "/sys/class/power_supply/pmi8998-charger/$f"; }
+done
+printf '\nUSB descriptors:\n'
+for d in /sys/bus/usb/devices/*; do
+    test -f "$d/idVendor" || continue
+    printf '%s vendor=' "${d##*/}"; cat "$d/idVendor"
+    for f in idProduct product manufacturer speed; do test ! -r "$d/$f" || { printf '%s=' "$f"; cat "$d/$f"; }; done
+done
+printf '\nInput names:\n'
+for p in /sys/class/input/event*/device/name; do printf '%s: ' "$p"; cat "$p"; done
+printf '\nRecent USB/Type-C diagnostics:\n'
+dmesg | grep -Ei 'typec|smb2|vbus|xhci|usb [0-9]|hub [0-9]|hid-generic|input:.*(usb|keyboard|mouse)' | tail -70
+printf '\nBattery temperature and capacity:\n'
+cat /sys/class/power_supply/qcom-battery/temp /sys/class/power_supply/qcom-battery/capacity

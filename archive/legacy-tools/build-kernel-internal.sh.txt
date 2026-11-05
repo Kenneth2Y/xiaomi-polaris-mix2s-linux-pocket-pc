@@ -1,0 +1,28 @@
+#!/bin/sh
+# Run only inside rootless-build-env.sh. No device deployment commands.
+set -eu
+cd /mnt/project/build/recipe
+export CARCH=aarch64
+export JOBS=12
+export MAKEFLAGS=-j12
+# Use abuild checksum/extraction/patch/config preparation, without --src.
+# The source archive is already cached locally; network fetch is unnecessary.
+export SRCDEST=/mnt/project/build/distfiles
+export REPODEST=/mnt/project/build/packages
+mkdir -p "$SRCDEST" "$REPODEST"
+clang --version
+ld.lld --version
+make --version | head -n 1
+abuild -F verify
+abuild -F unpack prepare
+# Avoid Kbuild's default generation of an unencrypted module-signing key.
+# The random passphrase lives only in this process environment, never in a file.
+export KBUILD_SIGN_PIN=$(openssl rand -hex 32)
+openssl req -new -x509 -newkey rsa:4096 -sha512 -days 365 \
+    -passout env:KBUILD_SIGN_PIN -subj '/CN=Polaris test01 module signing/' \
+    -keyout src/linux-sdm845-7.1-rc1-r0/certs/polaris-test-signing-key.pem \
+    -out src/linux-sdm845-7.1-rc1-r0/certs/polaris-test-signing-key.pem
+chmod 600 src/linux-sdm845-7.1-rc1-r0/certs/polaris-test-signing-key.pem
+abuild -F build
+abuild -F package
+printf '\nBuild and package staging complete. Nothing installed or deployed.\n'

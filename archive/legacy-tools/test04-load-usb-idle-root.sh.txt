@@ -1,0 +1,47 @@
+#!/bin/sh
+# First controlled no-cable initialization; stop if the idle rail is enabled.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test04
+test -e /sys/firmware/devicetree/base/soc@0/spmi@c440000/pmic@2/typec@1300/connector/pd-disable
+test ! -e /sys/firmware/devicetree/base/soc@0/spmi@c440000/pmic@2/typec@1300/connector/source-pdos
+test "$(cat /sys/class/power_supply/qcom-battery/capacity)" -ge 20
+test "$(cat /sys/class/power_supply/qcom-battery/temp)" -lt 450
+test ! -d /sys/module/qcom_pmic_typec_smb2
+trap 'status=$?; if test "$status" -ne 0 && test -d /sys/module/qcom_pmic_typec_smb2; then echo "Stopping failed Type-C test"; modprobe -r qcom_pmic_typec_smb2 || true; fi' EXIT
+printf 'User confirmed USB-C port empty. Loading bounded charger and VBUS provider.\n'
+modprobe qcom_smbx
+modprobe qcom_usb_vbus_regulator
+sleep 2
+test -d /sys/class/power_supply/pmi8998-charger
+vbus=
+for d in /sys/class/regulator/regulator*; do
+    test -r "$d/name" || continue
+    if test "$(cat "$d/name")" = polaris-usb-vbus; then vbus=$d; fi
+done
+test -n "$vbus"
+printf 'VBUS provider: %s\n' "$vbus"
+printf 'VBUS before Type-C load: '; cat "$vbus/state"
+test "$(cat "$vbus/state")" = disabled
+printf 'VBUS current limit: '; cat "$vbus/microamps"
+test "$(cat "$vbus/microamps")" = 500000
+printf 'Loading signed no-PD SMB2 Type-C module.\n'
+modprobe qcom_pmic_typec_smb2
+sleep 5
+test -d /sys/class/typec/port0
+printf 'VBUS after idle initialization: '; cat "$vbus/state"
+test "$(cat "$vbus/state")" = disabled
+for f in data_role power_role port_type preferred_role power_operation_mode; do
+    test ! -r "/sys/class/typec/port0/$f" || { printf '%s=' "$f"; cat "/sys/class/typec/port0/$f"; }
+done
+printf '\nUSB data role:\n'
+cat /sys/class/usb_role/a600000.usb-role-switch/role
+printf '\nPower observations:\n'
+for f in capacity voltage_now current_now temp status; do
+    printf '%s=' "$f"; cat "/sys/class/power_supply/qcom-battery/$f"
+done
+printf '\nController/charger messages:\n'
+dmesg | grep -Ei 'qcom-pmic-typec|smb2|pmi8998|vbus|tcpm|verification failed|unknown symbol|typec@1300' | tail -45
+printf '\nDeferred devices:\n'
+cat /sys/kernel/debug/devices_deferred 2>/dev/null || true
+printf '\nNo-cable idle test passed; driver remains loaded for controlled attach.\n'

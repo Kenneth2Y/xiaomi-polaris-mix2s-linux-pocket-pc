@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test06
+printf 'Final automatic charging transition:\n'
+sleep 5
+for i in 1 2 3; do
+ printf '\nSAMPLE %s\n' "$i"
+ cat /sys/class/usb_role/a600000.usb-role-switch/role /sys/class/typec/port0/power_role
+ for f in usb_type online status voltage_now current_now current_max; do printf 'charger.%s=' "$f"; cat "/sys/class/power_supply/pmi8998-charger/$f"; done
+ for f in status capacity voltage_now current_now temp; do printf 'battery.%s=' "$f"; cat "/sys/class/power_supply/qcom-battery/$f"; done
+ for d in /sys/class/regulator/regulator*; do
+  test -r "$d/name" || continue
+  test "$(cat "$d/name")" = polaris-usb-vbus || continue
+  printf 'source_vbus='; cat "$d/state"
+  test "$(cat "$d/state")" = disabled
+ done
+ test "$i" = 3 || sleep 5
+done
+test "$(cat /sys/class/usb_role/a600000.usb-role-switch/role)" = device
+grep -q '\[sink\]' /sys/class/typec/port0/power_role
+test "$(cat /sys/class/power_supply/pmi8998-charger/online)" = 1
+test "$(cat /sys/class/power_supply/pmi8998-charger/current_max)" -gt 0
+printf '\nPersistent services:\n'
+systemctl is-enabled greetd.service polaris-usb-role-test06.service polaris-charger-test05.service polaris-wifi-autoconnect.timer getty@tty2.service
+printf '\nUnexpected faults:\n'
+dmesg | grep -Ei 'verification failed|unknown symbol|gpu.*(hang|fault)|refusing to source|boost:.*result=-|BUG:|Oops:' | tail -15 || true
+printf '\nBoot hash:\n'
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+actual=$(head -c 29515776 "$dev" | sha256sum)
+printf '%s\n' "$actual"
+test "${actual%% *}" = e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce

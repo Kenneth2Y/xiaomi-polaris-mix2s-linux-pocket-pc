@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+tag=${1:?Specify a unique log tag}
+[[ "$tag" =~ ^[a-z0-9-]+$ ]] || exit 2
+remote_command=$(cat <<'REMOTE'
+sudo -- sh -c 'printf "\nPOLARIS_DMESG_BEGIN\n"; TERM=dumb dmesg'
+REMOTE
+)
+ssh -F /dev/null -tt -S "$project/build/ssh/control" \
+    -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile=<用户目录>/.ssh/known_hosts \
+    -o ConnectTimeout=5 user@172.16.42.1 "$remote_command" \
+    | python3 -B -u "$project/tools/redact-log.py" --auth-until-marker \
+    | tee "$project/logs/$tag-dmesg.log"

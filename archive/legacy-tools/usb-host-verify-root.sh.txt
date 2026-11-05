@@ -1,0 +1,30 @@
+#!/bin/sh
+# Read-only boot and USB enumeration verification after the fixed-host test.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(tr -d '\000' < /sys/firmware/devicetree/base/soc@0/usb@a6f8800/usb@a600000/dr_mode)" = host
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+test -b "$dev"
+actual=$(head -c 29515776 "$dev" | sha256sum)
+test "${actual%% *}" = 83eda61cff344b3fa8486b5e34626ee7332dc2682d7edccc1abba6b2eae42eb0
+printf 'Actual boot prefix SHA-256: %s\n' "${actual%% *}"
+printf '\nUSB boot/attach messages:\n'
+dmesg | grep -Ei 'dwc3|xhci|usb [0-9]|usbcore|hub [0-9]|usbhid|hid-generic|input:.*(usb|keyboard|mouse)' || true
+printf '\nUSB device descriptors:\n'
+for device in /sys/bus/usb/devices/*; do
+    test -f "$device/idVendor" || continue
+    printf '%s vendor=' "${device##*/}"; cat "$device/idVendor"
+    printf 'product_id='; cat "$device/idProduct"
+    for f in product manufacturer speed authorized bDeviceClass; do
+        test ! -r "$device/$f" || { printf '%s=' "$f"; cat "$device/$f"; }
+    done
+done
+printf '\nInput devices:\n'
+for p in /sys/class/input/event*/device; do
+    printf '%s: ' "$p"; cat "$p/name"
+    test ! -r "$p/id/bustype" || { printf 'bus='; cat "$p/id/bustype"; }
+done
+printf '\nWi-Fi and console services:\n'
+systemctl is-active systemd-vconsole-setup.service
+systemctl is-active polaris-wifi-autoconnect.timer
+nmcli -f GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS device show wlan0

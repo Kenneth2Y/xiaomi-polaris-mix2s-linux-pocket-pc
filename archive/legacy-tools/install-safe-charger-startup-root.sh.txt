@@ -1,0 +1,42 @@
+#!/bin/sh
+# Persist the already verified charger-only fallback, never load the broken sink TCPC.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+test ! -d /sys/module/qcom_pmic_typec_smb2
+install -d -m 755 /usr/local/libexec
+cat > /usr/local/libexec/polaris-charger-test05 <<'HELPER'
+#!/bin/sh
+set -eu
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+# A future/manual Type-C experiment owns its current limits while loaded.
+test ! -d /sys/module/qcom_pmic_typec_smb2
+modprobe qcom_smbx
+test -d /sys/class/power_supply/pmi8998-charger
+printf '500000\n' > /sys/class/power_supply/pmi8998-charger/current_max
+printf 'Charging\n' > /sys/class/power_supply/pmi8998-charger/status
+HELPER
+chmod 755 /usr/local/libexec/polaris-charger-test05
+cat > /etc/systemd/system/polaris-charger-test05.service <<'UNIT'
+[Unit]
+Description=Polaris test05 conservative charger-only initialization
+ConditionKernelVersion=7.1.0-rc1-sdm845-polaris-test05
+After=systemd-udev-trigger.service
+Before=greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/polaris-charger-test05
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now polaris-charger-test05.service
+printf '\nCharger startup unit:\n'
+systemctl status polaris-charger-test05.service --no-pager -l | head -25
+printf '\nActual input and battery:\n'
+for f in online status current_now current_max voltage_now; do printf 'charger.%s=' "$f"; cat "/sys/class/power_supply/pmi8998-charger/$f"; done
+for f in capacity voltage_now current_now temp; do printf 'battery.%s=' "$f"; cat "/sys/class/power_supply/qcom-battery/$f"; done
+printf '\nType-C controller remains unloaded:\n'; test ! -d /sys/module/qcom_pmic_typec_smb2 && echo yes

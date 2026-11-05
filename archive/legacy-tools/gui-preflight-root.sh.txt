@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+printf 'Installed GUI stack:\n'
+apk --no-network info -v | grep -E '^(phosh|phoc|stevia|greetd|foot|mesa-utils|mesa-dri-gallium|mesa-vulkan-freedreno)'
+printf '\nVendor session/service configurations:\n'
+for f in /usr/lib/systemd/system/phosh.service /usr/lib/systemd/system/greetd.service /usr/lib/systemd/system/greetd.service.d/phrog.conf /usr/lib/systemd/user/phosh.service /etc/phrog/greetd-config.toml /etc/greetd/config.toml /usr/share/phosh/phoc.ini /usr/share/wayland-sessions/phosh.desktop; do
+ test ! -r "$f" || { printf '\n%s\n' "$f"; cat "$f"; }
+done
+printf '\nAvailable graphical units:\n'
+systemctl list-unit-files '*phosh*' '*greetd*' '*phrog*' --no-pager
+printf '\nUser and seat:\n'; id user; loginctl seat-status seat0 --no-pager | head -35
+printf '\nGPU test executable options:\n'
+eglinfo --help 2>&1 | head -25 || true
+printf '\nEGL initialization summary (bounded 20 seconds):\n'
+set +e
+timeout 20 env EGL_PLATFORM=surfaceless eglinfo -B > /tmp/polaris-eglinfo-20261104.log 2>&1
+ret=$?
+set -e
+printf 'eglinfo exit=%s\n' "$ret"
+grep -E 'platform:|vendor|version|driver|renderer|Device|OpenGL|failed|error|Error' /tmp/polaris-eglinfo-20261104.log | head -100 || true
+printf '\nGPU kernel diagnostics:\n'
+dmesg | grep -Ei 'adreno|a630|gpu|hang|fault|ringbuffer|drm' | tail -35
+printf '\nCharging:\n'
+cat /sys/class/power_supply/qcom-battery/capacity /sys/class/power_supply/pmi8998-charger/current_now

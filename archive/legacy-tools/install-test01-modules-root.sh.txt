@@ -1,0 +1,20 @@
+#!/bin/sh
+# Reversible preparation only: add a new release directory, no package hooks.
+set -eu
+release=7.1.0-rc1-sdm845-polaris-test01
+archive=/tmp/polaris-test01-modules-20261104.tar
+destination=/usr/lib/modules/$release
+test "$(uname -r)" = 7.1.0-rc1-sdm845
+test ! -e "$destination"
+printf '%s  %s\n' b0884ea7c2f42b4403e028b423c8bdad37516b54c7b795d5f63a6fc448ca840a "$archive" | sha256sum -c -
+stage=$(mktemp -d /usr/lib/modules/.polaris-test01-stage.XXXXXX)
+# The fixed archive was locally audited: regular files/directories only, all
+# paths under usr/lib/modules/$release. No firmware or boot files are present.
+tar -xf "$archive" -C "$stage"
+test -f "$stage/usr/lib/modules/$release/modules.dep.bin"
+count=$(find "$stage/usr/lib/modules/$release" -name '*.ko.zst' | wc -l)
+test "$count" -eq 1155
+mv -T "$stage/usr/lib/modules/$release" "$destination"
+rmdir "$stage/usr/lib/modules" "$stage/usr/lib" "$stage/usr" "$stage"
+printf 'Installed %s modules in new directory: %s\n' "$count" "$destination"
+printf 'Running kernel remains: '; uname -r

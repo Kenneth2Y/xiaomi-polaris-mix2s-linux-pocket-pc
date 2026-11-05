@@ -1,0 +1,27 @@
+#!/bin/sh
+# Reuse the signed, hardware-ready-verified source configuration after bounded success.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+test ! -d /sys/module/qcom_pmic_typec_smb2
+modprobe qcom_smbx
+modprobe qcom_usb_vbus_regulator
+sleep 2
+test "$(cat /sys/class/power_supply/qcom-battery/capacity)" -ge 20
+test "$(cat /sys/class/power_supply/qcom-battery/temp)" -lt 450
+test "$(cat /sys/class/power_supply/pmi8998-charger/voltage_now)" -lt 1000000
+trap 'rc=$?; if test "$rc" -ne 0; then modprobe -r qcom_pmic_typec_smb2 || true; fi' EXIT
+for d in /sys/class/regulator/regulator*; do
+ test -r "$d/name" || continue
+ test "$(cat "$d/name")" = polaris-usb-vbus || continue
+ test "$(cat "$d/state")" = disabled
+ test "$(cat "$d/microamps")" = 500000
+done
+modprobe qcom_pmic_typec_smb2 source_otg_ready=1
+sleep 7
+test "$(cat /sys/class/usb_role/a600000.usb-role-switch/role)" = host
+printf 'Host role confirmed; input devices:\n'
+for f in /sys/class/input/event*/device/name; do cat "$f"; done
+printf '\nHardware-ready source setting: '; cat /sys/module/qcom_pmic_typec_smb2/parameters/source_otg_ready
+printf '\nUSB input monitor: '; /tmp/polaris-usb-input-readonly-20261104 --describe
+printf '\nController remains loaded for input and detach tests.\n'

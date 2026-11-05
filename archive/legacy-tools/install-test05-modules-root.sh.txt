@@ -1,0 +1,35 @@
+#!/bin/sh
+# Add only the new release and an inert-by-default USB experiment policy.
+set -eu
+umask 077
+release=7.1.0-rc1-sdm845-polaris-test05
+archive=/tmp/polaris-test05-modules-20261104.tar
+destination=/usr/lib/modules/$release
+policy=/etc/modprobe.d/polaris-usb-test04.conf
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test04
+test ! -e "$destination"
+test -f "$policy"
+grep -qx "blacklist qcom_pmic_typec_smb2" "$policy"
+grep -qx "blacklist qcom_smbx" "$policy"
+grep -qx "blacklist qcom_usb_vbus_regulator" "$policy"
+df -Pk /usr/lib/modules | awk 'NR == 2 { exit ($4 < 80000) }'
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+actual=$(head -c 29515776 "$dev" | sha256sum)
+test "${actual%% *}" = 7de6ede15d2f4a7716cc138f909366e17dfa3fa174c8c6fbe04aec8bee0a76e5
+stage=$(mktemp -d /usr/lib/modules/.polaris-test05-stage.XXXXXX)
+# Copy into a root-owned directory before hashing/extracting the fixed archive.
+cp "$archive" "$stage/modules.tar"
+printf '%s  %s\n' 23728889c4c5c791eca73573b91dab800ce4019af78ae78efa39825f574d827d "$stage/modules.tar" | sha256sum -c -
+tar -xf "$stage/modules.tar" -C "$stage"
+rm "$stage/modules.tar"
+test -f "$stage/usr/lib/modules/$release/modules.dep.bin"
+count=$(find "$stage/usr/lib/modules/$release" -name '*.ko.zst' | wc -l)
+test "$count" -eq 1156
+find "$stage/usr/lib/modules/$release" -type d -exec chmod 755 {} +
+mv -T "$stage/usr/lib/modules/$release" "$destination"
+rmdir "$stage/usr/lib/modules" "$stage/usr/lib" "$stage/usr" "$stage"
+printf 'Installed %s matching modules into independent %s\n' "$count" "$destination"
+printf 'Power/Type-C modules remain blacklisted and are not loaded.\n'
+printf 'Current kernel remains: '; uname -r
+modinfo -k "$release" -F vermagic qcom_pmic_typec_smb2
+modprobe -S "$release" -n qcom_pmic_typec_smb2

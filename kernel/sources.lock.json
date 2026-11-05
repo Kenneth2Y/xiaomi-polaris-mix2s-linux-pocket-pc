@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "upstream": {
+    "repository": "https://gitlab.com/sdm845-mainline/linux",
+    "tag": "sdm845-7.1-rc1-r0",
+    "archive": "linux-sdm845-7.1-rc1-r0.tar.gz",
+    "url": "https://gitlab.com/sdm845-mainline/linux/-/archive/sdm845-7.1-rc1-r0/linux-sdm845-7.1-rc1-r0.tar.gz",
+    "sha512": "94da173aaf74dd33ef8ff9015e92759481cd0da5bd8a1e52c8664fd372d48a1155655001ad2e9d26557733c71ae8bc448e4ebdf1372b8f32159907a35f0306a9"
+  },
+  "historical_kernel_release": "7.1.0-rc1-sdm845-polaris-test06",
+  "llvm": "23.1.4",
+  "make": "4.4.1",
+  "pmbootstrap": {
+    "version": "3.12.1",
+    "commit": "e0dfe2cda7f3a0b70cdcc96f3060100839322aa4"
+  },
+  "pmaports_commit": "4d402875197c665444f2c149d900d448f5215e5d",
+  "smb2_reference": {
+    "repository": "https://github.com/samcday/qcom-pmic-typec-smb2",
+    "commit": "4164801fa70216a8687cdfdc57026df740926a14"
+  },
+  "source_date_epoch": 1793750400,
+  "patch_series": "kernel/patches/series",
+  "config": "kernel/config/test06.config",
+  "rebuild_notes": "新签名密钥与证书使重建不保证逐字节相同；使用独立 LOCALVERSION，保留 lockdown。"
+}

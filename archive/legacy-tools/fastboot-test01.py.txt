@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Narrow Fastboot runner: single polaris, verified images, boot partition only."""
+from pathlib import Path
+import argparse
+import datetime
+import hashlib
+import json
+import re
+import subprocess
+
+root = Path(__file__).resolve().parent.parent
+exe = "/mnt/c/polaris-lab/platform-tools/fastboot.exe"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("action", choices=["inspect", "boot", "flash-test", "flash-baseline", "reboot"])
+parser.add_argument("--profile", choices=["test01", "test02", "test03", "test04", "test05", "test06"], default="test01")
+args = parser.parse_args()
+record = {"time": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).isoformat(),
+          "action": args.action, "profile": args.profile, "commands": []}
+profiles = {
+    "test01": ("boot-test-01-lcd-candidate.img", "68093f62b6aa40abfa5fdd3704d6ab33c97b31ae92993118d1f5ba51b427fd46"),
+    "test02": ("boot-test-02-wifi.img", "6f01281de6087dea502462f373b67daedc0a33403cd41c451753736b25de8922"),
+    "test03": ("boot-test-03-usb-host.img", "83eda61cff344b3fa8486b5e34626ee7332dc2682d7edccc1abba6b2eae42eb0"),
+    "test04": ("boot-test-04-usb-typec.img", "7de6ede15d2f4a7716cc138f909366e17dfa3fa174c8c6fbe04aec8bee0a76e5"),
+    "test05": ("boot-test-05-usb-boost.img", "ac2d4496089a3f7658b8cbdae6b6b364ffe81855b42d4434bf3943198eb1cb95"),
+    "test06": ("boot-test-06-usb-charge.img", "e9c7591b9a044f63d3fc4036cee778217ce7fe31a9a31c3cc5205b4977c9adce"),
+}
+image_name, image_hash = profiles[args.profile]
+windows_image = "C:\\polaris-lab\\export\\" + image_name
+device_id = ""
+
+
+def run(arguments, timeout=15):
+    result = subprocess.run([exe, *(["-s", device_id] if device_id else []), *arguments],
+                            capture_output=True, text=True, timeout=timeout)
+    output = result.stdout + result.stderr
+    clean = output.replace(device_id, "[DEVICE]") if device_id else output
+    if arguments != ["devices"]:
+        record["commands"].append({"arguments": arguments, "returncode": result.returncode, "output": clean})
+    return result.returncode, output
+
+
+try:
+    code, devices = run(["devices"])
+    ids = [line.split()[0] for line in devices.splitlines() if line.strip().endswith("fastboot")]
+    record["device_count"] = len(ids)
+    if code or len(ids) != 1:
+        raise RuntimeError("Expected exactly one Fastboot device")
+    device_id = ids[0]
+    code, product = run(["getvar", "product"])
+    if code or not re.search(r"product:\s*polaris\b", product):
+        raise RuntimeError("Product verification failed")
+    code, size = run(["getvar", "partition-size:boot"])
+    match = re.search(r"partition-size:boot:\s*(0x[0-9a-fA-F]+|[0-9]+)", size)
+    if code or not match:
+        raise RuntimeError("Cannot verify boot partition size")
+    partition_size = int(match.group(1), 0)
+    record["boot_partition_bytes"] = partition_size
+    code, state = run(["oem", "device-info"])
+    unlocked = code == 0 and bool(re.search(r"Device unlocked:\s*true", state, re.I))
+    if not unlocked:
+        code, state = run(["getvar", "unlocked"])
+        unlocked = code == 0 and bool(re.search(r"unlocked:\s*(yes|true)", state, re.I))
+    record["bootloader_unlocked"] = unlocked
+    if not unlocked:
+        raise RuntimeError("Unlocked state could not be confirmed")
+    paths = {
+        "test": (Path("/mnt/c/polaris-lab/export") / image_name, image_hash),
+        "lcd_baseline": (Path("/mnt/c/polaris-lab/export/boot-test-01-lcd-candidate.img"),
+                         "68093f62b6aa40abfa5fdd3704d6ab33c97b31ae92993118d1f5ba51b427fd46"),
+        "wifi_baseline": (Path("/mnt/c/polaris-lab/export/boot-test-02-wifi.img"),
+                          "6f01281de6087dea502462f373b67daedc0a33403cd41c451753736b25de8922"),
+        "usb_gui_baseline": (Path("/mnt/c/polaris-lab/export/boot-test-05-usb-boost.img"),
+                             "ac2d4496089a3f7658b8cbdae6b6b364ffe81855b42d4434bf3943198eb1cb95"),
+        "baseline": (Path("/mnt/c/polaris-lab/export/boot.img"),
+                     "c51af14496f0f9d63117ab1262ad0703a6ce2cde4bcd13b214e0a06cdcde4fc9"),
+    }
+    for name, (path, expected) in paths.items():
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise RuntimeError(f"{name} image hash mismatch")
+        if path.stat().st_size > partition_size:
+            raise RuntimeError(f"{name} image exceeds boot partition size")
+    if args.action != "inspect":
+        commands = {
+            "boot": ["boot", windows_image],
+            "flash-test": ["flash", "boot", windows_image],
+            "flash-baseline": ["flash", "boot", r"C:\polaris-lab\export\boot.img"],
+            "reboot": ["reboot"],
+        }
+        code, output = run(commands[args.action], timeout=45)
+        record["operation_returncode"] = code
+        if code:
+            raise RuntimeError("Fastboot operation returned an error; inspect recorded output")
+    record["result"] = "success"
+except Exception as error:
+    record["result"] = "failed"
+    record["error"] = str(error).replace(device_id, "[DEVICE]") if device_id else str(error)
+finally:
+    stamp = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y%m%d-%H%M%S")
+    destination = root / "logs" / f"fastboot-{args.action}-{stamp}.json"
+    destination.write_text(json.dumps(record, indent=2) + "\n")
+    print(json.dumps(record, indent=2))
+raise SystemExit(0 if record["result"] == "success" else 1)

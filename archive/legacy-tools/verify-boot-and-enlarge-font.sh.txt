@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+remote_command=$(cat <<'REMOTE'
+sudo -- sh -eu -c 'printf "\nPOLARIS_DMESG_BEGIN\n"; test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test01; dev=$(readlink -f /dev/disk/by-partlabel/boot); set -- $(head -c 29515776 "$dev" | sha256sum); test "$1" = 68093f62b6aa40abfa5fdd3704d6ab33c97b31ae92993118d1f5ba51b427fd46; printf "Actual boot partition matches test01 candidate.\n"; test ! -e /tmp/polaris-console-original.psf; setfont -C /dev/tty1 -O /tmp/polaris-console-original.psf -v -d /usr/share/consolefonts/ter-132b.psf.gz; printf "Console rows/columns: "; stty -F /dev/tty1 size'
+REMOTE
+)
+ssh -F /dev/null -tt -S "$project/build/ssh/control" \
+    -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile=<用户目录>/.ssh/known_hosts \
+    -o ConnectTimeout=5 user@172.16.42.1 "$remote_command" \
+    | python3 -B -u "$project/tools/redact-log.py" --auth-until-marker \
+    | tee "$project/logs/test01-persistent-boot-and-font.log"

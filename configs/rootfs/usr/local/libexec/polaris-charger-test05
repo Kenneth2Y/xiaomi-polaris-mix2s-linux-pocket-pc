@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+case "$(uname -r)" in 7.1.0-rc1-sdm845-polaris-test05|7.1.0-rc1-sdm845-polaris-test06) ;; *) exit 1 ;; esac
+# A future/manual Type-C experiment owns its current limits while loaded.
+test ! -d /sys/module/qcom_pmic_typec_smb2
+modprobe qcom_smbx
+test -d /sys/class/power_supply/pmi8998-charger
+printf '500000\n' > /sys/class/power_supply/pmi8998-charger/current_max
+printf 'Charging\n' > /sys/class/power_supply/pmi8998-charger/status

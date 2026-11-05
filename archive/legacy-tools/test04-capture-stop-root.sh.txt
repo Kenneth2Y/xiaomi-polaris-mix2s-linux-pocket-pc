@@ -1,0 +1,26 @@
+#!/bin/sh
+# Capture a failing attach, then shut down the experimental controller.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test04
+printf 'Type-C controller before stop:\n'
+for f in data_role power_role power_operation_mode; do
+    test ! -r "/sys/class/typec/port0/$f" || { printf '%s=' "$f"; cat "/sys/class/typec/port0/$f"; }
+done
+printf '\nAttach/error messages:\n'
+dmesg | grep -Ei 'typec|smb2|vbus|xhci|usb [0-9]|hub [0-9]|hid-generic' | tail -90
+printf '\nTCPM state-machine trace (read only):\n'
+for f in /sys/kernel/debug/usb/tcpm-*; do
+    test -f "$f" || continue
+    tail -100 "$f" || true
+done
+printf '\nStopping experimental Type-C controller:\n'
+modprobe -r qcom_pmic_typec_smb2
+test ! -d /sys/module/qcom_pmic_typec_smb2
+for d in /sys/class/regulator/regulator*; do
+    test -r "$d/name" || continue
+    test "$(cat "$d/name")" = polaris-usb-vbus || continue
+    printf 'VBUS after stop: '; cat "$d/state"
+    test "$(cat "$d/state")" = disabled
+done
+printf 'Stopped; VBUS disabled.\n'

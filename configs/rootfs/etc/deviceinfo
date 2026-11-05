@@ -1,0 +1,3 @@
+
+# polaris-lab: keep tested boot image independent of package triggers.
+deviceinfo_flash_kernel_on_update="false"

@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Assemble a fixed-host diagnostic with exactly one semantic DTB change."""
+from pathlib import Path
+import difflib
+import hashlib
+import json
+from bootimg import BootImage
+
+root = Path(__file__).resolve().parent.parent
+old = (root / "logs/test02-device-tree.dts").read_text().splitlines(True)
+new = (root / "logs/test03-device-tree.dts").read_text().splitlines(True)
+diff = list(difflib.unified_diff(old, new, fromfile="test02", tofile="test03"))
+changes = [line for line in diff if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
+if changes != ['-\t\t\t\tdr_mode = "peripheral";\n', '+\t\t\t\tdr_mode = "host";\n']:
+    raise SystemExit("Unexpected DTB differences:\n" + "".join(diff))
+(root / "logs/test03-dtb-difference.patch").write_text("".join(diff))
+source = (root / "images/boot-test-02-wifi.img").read_bytes()
+if hashlib.sha256(source).hexdigest() != "6f01281de6087dea502462f373b67daedc0a33403cd41c451753736b25de8922":
+    raise SystemExit("Known-working Wi-Fi baseline hash mismatch")
+image = BootImage.parse(source)
+kernel, _ = image.kernel_and_dtb()
+ramdisk = image.ramdisk
+dtb = (root / "build/artifacts/test03/sdm845-xiaomi-polaris.dtb").read_bytes()
+image.kernel = kernel + dtb
+result = image.encode()
+verified = BootImage.parse(result)
+if verified.encode() != result or verified.kernel_and_dtb() != (kernel, dtb) or verified.ramdisk != ramdisk:
+    raise SystemExit("Image roundtrip/kernel/initramfs preservation failed")
+if len(result) > 67108864:
+    raise SystemExit("Candidate exceeds boot partition")
+output = root / "images/boot-test-03-usb-host.img"
+with output.open("xb") as handle:
+    handle.write(result)
+manifest = {
+    "image": output.name, "sha256": hashlib.sha256(result).hexdigest(), "bytes": len(result),
+    "kernel_release": "7.1.0-rc1-sdm845-polaris-test01", "kernel_unchanged": True,
+    "initramfs_unchanged": True, "rootfs_modules_unchanged": True,
+    "kernel_gzip_sha256": hashlib.sha256(kernel).hexdigest(),
+    "dtb_sha256": hashlib.sha256(dtb).hexdigest(), "ramdisk_sha256": hashlib.sha256(ramdisk).hexdigest(),
+    "change": "USB DWC3 dr_mode: peripheral -> host, diagnostic only",
+    "power_control_change": "none; no Type-C/charger/boost/PMIC changes",
+    "usb_gadget_access": "unavailable while this fixed-host candidate is running; use Wi-Fi SSH",
+    "rollback": "images/boot-test-02-wifi.img", "status": "OFFLINE_VERIFIED_NOT_BOOT_TESTED",
+}
+with output.with_suffix(".json").open("x") as handle:
+    json.dump(manifest, handle, indent=2)
+    handle.write("\n")
+print(json.dumps(manifest, indent=2))

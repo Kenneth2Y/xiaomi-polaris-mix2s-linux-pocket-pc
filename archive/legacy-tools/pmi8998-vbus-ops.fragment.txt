@@ -1,0 +1,124 @@
+/* PMI8998 sequence follows MiCode polaris-o-oss smb-lib.c/smb-reg.h. */
+#define PMI8998_OTG_STATUS		0x09
+#define PMI8998_OTG_SOFTSTART_DONE	BIT(3)
+#define PMI8998_OTG_STATE_MASK		GENMASK(2, 0)
+#define PMI8998_OTG_STATE_ENABLED		2
+#define PMI8998_OTG_RT_STATUS		0x10
+#define PMI8998_OTG_FAULT_MASK		GENMASK(2, 0)
+#define PMI8998_OTG_ENG_CFG		0xc0
+#define PMI8998_HALT_1_IN_8		BIT(0)
+#define PMI8998_SEC_ACCESS		0xd0
+
+struct pmi8998_vbus {
+	struct regmap *regmap;
+	struct device *dev;
+	u32 base;
+	unsigned int halt_before;
+	bool halt_saved;
+};
+
+static int pmi8998_vbus_halt(struct pmi8998_vbus *vbus, unsigned int value)
+{
+	int ret;
+
+	ret = regmap_write(vbus->regmap, vbus->base + PMI8998_SEC_ACCESS, 0xa5);
+	if (ret)
+		return ret;
+	/* Force the protected write, consuming the bank-local unlock. */
+	return regmap_write_bits(vbus->regmap, vbus->base + PMI8998_OTG_ENG_CFG,
+				 PMI8998_HALT_1_IN_8, value);
+}
+
+static int pmi8998_vbus_status(struct regulator_dev *rdev)
+{
+	struct pmi8998_vbus *vbus = rdev_get_drvdata(rdev);
+	unsigned int command, status, fault;
+	int ret;
+
+	ret = regmap_read(vbus->regmap, vbus->base + CMD_OTG, &command);
+	if (ret)
+		return ret;
+	if (!(command & OTG_EN))
+		return REGULATOR_STATUS_OFF;
+	ret = regmap_read(vbus->regmap, vbus->base + PMI8998_OTG_STATUS, &status);
+	if (ret)
+		return ret;
+	ret = regmap_read(vbus->regmap, vbus->base + PMI8998_OTG_RT_STATUS, &fault);
+	if (ret)
+		return ret;
+	if (fault & PMI8998_OTG_FAULT_MASK)
+		return REGULATOR_STATUS_ERROR;
+	if ((status & PMI8998_OTG_SOFTSTART_DONE) &&
+	    (status & PMI8998_OTG_STATE_MASK) == PMI8998_OTG_STATE_ENABLED)
+		return REGULATOR_STATUS_ON;
+	return REGULATOR_STATUS_UNDEFINED;
+}
+
+static int pmi8998_vbus_is_enabled(struct regulator_dev *rdev)
+{
+	int status = pmi8998_vbus_status(rdev);
+
+	return status < 0 ? status : status == REGULATOR_STATUS_ON;
+}
+
+static int pmi8998_vbus_disable(struct regulator_dev *rdev)
+{
+	struct pmi8998_vbus *vbus = rdev_get_drvdata(rdev);
+	int ret;
+
+	ret = regmap_update_bits(vbus->regmap, vbus->base + CMD_OTG, OTG_EN, 0);
+	if (ret)
+		return ret;
+	if (vbus->halt_saved) {
+		ret = pmi8998_vbus_halt(vbus, vbus->halt_before);
+		if (!ret)
+			vbus->halt_saved = false;
+	}
+	return ret;
+}
+
+static int pmi8998_vbus_enable(struct regulator_dev *rdev)
+{
+	struct pmi8998_vbus *vbus = rdev_get_drvdata(rdev);
+	unsigned int halt, status = 0, fault = 0, command = 0;
+	int ready, ret, cleanup;
+
+	ret = regmap_read(vbus->regmap, vbus->base + PMI8998_OTG_ENG_CFG, &halt);
+	if (ret)
+		return ret;
+	vbus->halt_before = halt & PMI8998_HALT_1_IN_8;
+	vbus->halt_saved = true;
+	ret = pmi8998_vbus_halt(vbus, PMI8998_HALT_1_IN_8);
+	if (ret)
+		goto fail;
+	ret = regmap_update_bits(vbus->regmap, vbus->base + CMD_OTG, OTG_EN, OTG_EN);
+	if (ret)
+		goto fail;
+	ret = read_poll_timeout(pmi8998_vbus_status, ready,
+				ready < 0 || ready == REGULATOR_STATUS_ON ||
+				ready == REGULATOR_STATUS_ERROR,
+				1000, 500000, false, rdev);
+	if (!ret && ready != REGULATOR_STATUS_ON)
+		ret = ready < 0 ? ready : -EIO;
+	regmap_read(vbus->regmap, vbus->base + PMI8998_OTG_STATUS, &status);
+	regmap_read(vbus->regmap, vbus->base + PMI8998_OTG_RT_STATUS, &fault);
+	regmap_read(vbus->regmap, vbus->base + CMD_OTG, &command);
+	dev_info(vbus->dev, "PMI8998 boost: cmd=%#x status=%#x fault=%#x result=%d\n",
+		 command, status, fault, ret);
+	if (!ret)
+		return 0;
+fail:
+	cleanup = pmi8998_vbus_disable(rdev);
+	if (cleanup)
+		dev_err(vbus->dev, "failed to stop unsuccessful boost: %d\n", cleanup);
+	return ret;
+}
+
+static const struct regulator_ops pmi8998_vbus_ops = {
+	.enable = pmi8998_vbus_enable,
+	.disable = pmi8998_vbus_disable,
+	.is_enabled = pmi8998_vbus_is_enabled,
+	.get_status = pmi8998_vbus_status,
+	.get_current_limit = regulator_get_current_limit_regmap,
+	.set_current_limit = regulator_set_current_limit_regmap,
+};

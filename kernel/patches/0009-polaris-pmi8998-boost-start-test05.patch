@@ -1,0 +1,294 @@
+From: Polaris Lab <polaris@localhost>
+Subject: [PATCH] regulator: implement PMI8998 boost startup and verified status
+
+Follow the MiCode polaris-o-oss SMB2 1-in-8 halt/OTG enable order and restore
+the previous protected bit on disable. Verify OTG soft-start and fault status,
+keeping the existing 500 mA limit and rejecting repeated failed starts.
+Expose a load-time test switch for source-aware sensing based on real OTG
+ready state rather than merely the enable command. The default remains the
+original Type-C detector. Never bypass the regulator's hardware checks.
+
+Signed-off-by: Polaris Lab <polaris@localhost>
+---
+diff --git a/drivers/regulator/qcom_usb_vbus-regulator.c b/drivers/regulator/qcom_usb_vbus-regulator.c
+--- a/drivers/regulator/qcom_usb_vbus-regulator.c
++++ b/drivers/regulator/qcom_usb_vbus-regulator.c
+@@ -5,6 +5,7 @@
+ // Copyright (c) 2020, The Linux Foundation. All rights reserved.
+ 
+ #include <linux/module.h>
++#include <linux/iopoll.h>
+ #include <linux/err.h>
+ #include <linux/kernel.h>
+ #include <linux/of.h>
+@@ -34,6 +35,131 @@
+ 	.set_current_limit = regulator_set_current_limit_regmap,
+ };
+ 
++/* PMI8998 sequence follows MiCode polaris-o-oss smb-lib.c/smb-reg.h. */
++#define PMI8998_OTG_STATUS		0x09
++#define PMI8998_OTG_SOFTSTART_DONE	BIT(3)
++#define PMI8998_OTG_STATE_MASK		GENMASK(2, 0)
++#define PMI8998_OTG_STATE_ENABLED		2
++#define PMI8998_OTG_RT_STATUS		0x10
++#define PMI8998_OTG_FAULT_MASK		GENMASK(2, 0)
++#define PMI8998_OTG_ENG_CFG		0xc0
++#define PMI8998_HALT_1_IN_8		BIT(0)
++#define PMI8998_SEC_ACCESS		0xd0
++
++struct pmi8998_vbus {
++	struct regmap *regmap;
++	struct device *dev;
++	u32 base;
++	unsigned int halt_before;
++	bool halt_saved;
++};
++
++static int pmi8998_vbus_halt(struct pmi8998_vbus *vbus, unsigned int value)
++{
++	int ret;
++
++	ret = regmap_write(vbus->regmap, vbus->base + PMI8998_SEC_ACCESS, 0xa5);
++	if (ret)
++		return ret;
++	/* Force the protected write, consuming the bank-local unlock. */
++	return regmap_write_bits(vbus->regmap, vbus->base + PMI8998_OTG_ENG_CFG,
++				 PMI8998_HALT_1_IN_8, value);
++}
++
++static int pmi8998_vbus_status(struct regulator_dev *rdev)
++{
++	struct pmi8998_vbus *vbus = rdev_get_drvdata(rdev);
++	unsigned int command, status, fault;
++	int ret;
++
++	ret = regmap_read(vbus->regmap, vbus->base + CMD_OTG, &command);
++	if (ret)
++		return ret;
++	if (!(command & OTG_EN))
++		return REGULATOR_STATUS_OFF;
++	ret = regmap_read(vbus->regmap, vbus->base + PMI8998_OTG_STATUS, &status);
++	if (ret)
++		return ret;
++	ret = regmap_read(vbus->regmap, vbus->base + PMI8998_OTG_RT_STATUS, &fault);
++	if (ret)
++		return ret;
++	if (fault & PMI8998_OTG_FAULT_MASK)
++		return REGULATOR_STATUS_ERROR;
++	if ((status & PMI8998_OTG_SOFTSTART_DONE) &&
++	    (status & PMI8998_OTG_STATE_MASK) == PMI8998_OTG_STATE_ENABLED)
++		return REGULATOR_STATUS_ON;
++	return REGULATOR_STATUS_UNDEFINED;
++}
++
++static int pmi8998_vbus_is_enabled(struct regulator_dev *rdev)
++{
++	int status = pmi8998_vbus_status(rdev);
++
++	return status < 0 ? status : status == REGULATOR_STATUS_ON;
++}
++
++static int pmi8998_vbus_disable(struct regulator_dev *rdev)
++{
++	struct pmi8998_vbus *vbus = rdev_get_drvdata(rdev);
++	int ret;
++
++	ret = regmap_update_bits(vbus->regmap, vbus->base + CMD_OTG, OTG_EN, 0);
++	if (ret)
++		return ret;
++	if (vbus->halt_saved) {
++		ret = pmi8998_vbus_halt(vbus, vbus->halt_before);
++		if (!ret)
++			vbus->halt_saved = false;
++	}
++	return ret;
++}
++
++static int pmi8998_vbus_enable(struct regulator_dev *rdev)
++{
++	struct pmi8998_vbus *vbus = rdev_get_drvdata(rdev);
++	unsigned int halt, status = 0, fault = 0, command = 0;
++	int ready, ret, cleanup;
++
++	ret = regmap_read(vbus->regmap, vbus->base + PMI8998_OTG_ENG_CFG, &halt);
++	if (ret)
++		return ret;
++	vbus->halt_before = halt & PMI8998_HALT_1_IN_8;
++	vbus->halt_saved = true;
++	ret = pmi8998_vbus_halt(vbus, PMI8998_HALT_1_IN_8);
++	if (ret)
++		goto fail;
++	ret = regmap_update_bits(vbus->regmap, vbus->base + CMD_OTG, OTG_EN, OTG_EN);
++	if (ret)
++		goto fail;
++	ret = read_poll_timeout(pmi8998_vbus_status, ready,
++				ready < 0 || ready == REGULATOR_STATUS_ON ||
++				ready == REGULATOR_STATUS_ERROR,
++				1000, 500000, false, rdev);
++	if (!ret && ready != REGULATOR_STATUS_ON)
++		ret = ready < 0 ? ready : -EIO;
++	regmap_read(vbus->regmap, vbus->base + PMI8998_OTG_STATUS, &status);
++	regmap_read(vbus->regmap, vbus->base + PMI8998_OTG_RT_STATUS, &fault);
++	regmap_read(vbus->regmap, vbus->base + CMD_OTG, &command);
++	dev_info(vbus->dev, "PMI8998 boost: cmd=%#x status=%#x fault=%#x result=%d\n",
++		 command, status, fault, ret);
++	if (!ret)
++		return 0;
++fail:
++	cleanup = pmi8998_vbus_disable(rdev);
++	if (cleanup)
++		dev_err(vbus->dev, "failed to stop unsuccessful boost: %d\n", cleanup);
++	return ret;
++}
++
++static const struct regulator_ops pmi8998_vbus_ops = {
++	.enable = pmi8998_vbus_enable,
++	.disable = pmi8998_vbus_disable,
++	.is_enabled = pmi8998_vbus_is_enabled,
++	.get_status = pmi8998_vbus_status,
++	.get_current_limit = regulator_get_current_limit_regmap,
++	.set_current_limit = regulator_set_current_limit_regmap,
++};
++
+ static const unsigned int pmi8998_curr_table[] = {
+ 	250000, 500000, 750000, 1000000, 1250000, 1500000,
+ };
+@@ -52,6 +178,7 @@
+ 	struct device *dev = &pdev->dev;
+ 	struct regulator_dev *rdev;
+ 	struct regulator_desc *rdesc;
++	struct pmi8998_vbus *vbus;
+ 	struct regmap *regmap;
+ 	struct regulator_config config = { };
+ 	struct regulator_init_data *init_data;
+@@ -74,6 +201,14 @@
+ 	if (!rdesc)
+ 		return -ENOMEM;
+ 	if (device_is_compatible(dev, "qcom,pmi8998-vbus-reg")) {
++		vbus = devm_kzalloc(dev, sizeof(*vbus), GFP_KERNEL);
++		if (!vbus)
++			return -ENOMEM;
++		vbus->regmap = regmap;
++		vbus->dev = dev;
++		vbus->base = base;
++		config.driver_data = vbus;
++		rdesc->ops = &pmi8998_vbus_ops;
+ 		rdesc->curr_table = pmi8998_curr_table;
+ 		rdesc->n_current_limits = ARRAY_SIZE(pmi8998_curr_table);
+ 	}
+diff --git a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.c b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.c
+--- a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.c
++++ b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.c
+@@ -13,6 +13,8 @@
+ #include <linux/iopoll.h>
+ #include <linux/kernel.h>
+ #include <linux/mutex.h>
++#include <linux/module.h>
++#include <linux/property.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/regmap.h>
+@@ -120,6 +122,13 @@
+ #define SMB2_TYPEC_CFG_3_INTR_EN_MASK \
+ 	(SMB2_TYPEC_TRYSOURCE_DETECT_INT_EN_BIT | \
+ 	 SMB2_TYPEC_TRYSINK_DETECT_INT_EN_BIT)
++
++/* Default keeps the original detector; alternate mode still verifies
++ * real PMI8998 boost status through the provider's is_enabled operation.
++ */
++static bool source_otg_ready;
++module_param(source_otg_ready, bool, 0444);
++MODULE_PARM_DESC(source_otg_ready, "Use verified PMI8998 boost status while sourcing");
+ 
+ struct smb2_saved_reg {
+ 	unsigned int reg;
+@@ -147,6 +156,7 @@
+ 	bool irqs_enabled;
+ 	bool vbus_enabled;
+ 	bool vbus_high;
++	bool source_start_failed;
+ 	bool vbus_error_active;
+ 	bool vconn_enabled;
+ 	bool vconn_oc_active;
+@@ -540,6 +550,14 @@
+ 		goto unlock;
+ 
+ 	vbus_high = !!(status4 & SMB2_TYPEC_VBUS_STATUS_BIT);
++	if (source_otg_ready && port->vbus_enabled &&
++	    device_is_compatible(port->dev, "qcom,pmi8998-typec")) {
++		ret = regulator_is_enabled(port->vbus);
++		if (ret < 0)
++			goto unlock;
++		vbus_high = ret > 0;
++	}
++
+ 	if (port->vbus_high != vbus_high) {
+ 		bool was_high = port->vbus_high;
+ 
+@@ -626,6 +644,14 @@
+ 		return ret;
+ 
+ 	port->vbus_high = !!(status4 & SMB2_TYPEC_VBUS_STATUS_BIT);
++	if (source_otg_ready && port->vbus_enabled &&
++	    device_is_compatible(port->dev, "qcom,pmi8998-typec")) {
++		ret = regulator_is_enabled(port->vbus);
++		if (ret < 0)
++			return ret;
++		port->vbus_high = ret > 0;
++	}
++
+ 	if (changed)
+ 		*changed = was_high != port->vbus_high;
+ 	if (status4_out)
+@@ -636,19 +662,17 @@
+ static int smb2_vbus_wait_locked(struct pmic_typec_port *port, bool high,
+ 				  bool *changed)
+ {
+-	unsigned int status4;
+ 	bool was_high = port->vbus_high;
+-	int ret;
+-
+-	ret = regmap_read_poll_timeout(port->regmap,
+-			port->base + SMB2_TYPE_C_STATUS_4_REG, status4,
+-			!!(status4 & SMB2_TYPEC_VBUS_STATUS_BIT) == high,
+-			SMB2_VBUS_POLL_US, SMB2_VBUS_SETTLE_TIMEOUT_US);
+-	if (!ret || ret == -ETIMEDOUT)
+-		port->vbus_high = !!(status4 & SMB2_TYPEC_VBUS_STATUS_BIT);
++	int sampled, ret;
++
++	ret = read_poll_timeout(smb2_vbus_detect_locked, sampled,
++				sampled < 0 || !!sampled == high,
++				SMB2_VBUS_POLL_US, SMB2_VBUS_SETTLE_TIMEOUT_US,
++				false, port, NULL, NULL);
++	if (!ret && sampled < 0)
++		ret = sampled;
+ 	if (changed)
+ 		*changed = was_high != port->vbus_high;
+-
+ 	return ret;
+ }
+ 
+@@ -758,6 +782,11 @@
+ 					status4 & SMB2_TYPEC_VBUS_ERROR_STATUS_BIT;
+ 			}
+ 		}
++		goto unlock;
++	}
++
++	if (on && port->source_start_failed) {
++		ret = -EIO;
+ 		goto unlock;
+ 	}
+ 
+@@ -822,6 +851,11 @@
+ 	if (vbus_error_recovery && tcpm_port)
+ 		tcpm_port_error_recovery(tcpm_port);
+ 
++	if (on && ret) {
++		mutex_lock(&port->lock);
++		port->source_start_failed = true;
++		mutex_unlock(&port->lock);
++	}
+ 	dev_dbg(port->dev, "set_vbus: %s (%d)\n", str_on_off(on), ret);
+ 	return ret;
+ }

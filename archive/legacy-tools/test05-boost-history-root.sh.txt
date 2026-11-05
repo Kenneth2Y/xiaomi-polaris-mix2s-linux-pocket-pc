@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+printf 'All boost evidence from kernel journal:\n'
+journalctl -k -b --no-pager -o short-monotonic | grep -E 'PMI8998 boost|failed to stop unsuccessful|refusing to source|VBUS failed|enabled VBUS|VBUS rollback|regulator.*(fail|error)' | tail -50 || true
+printf '\nController unloaded: '; test ! -d /sys/module/qcom_pmic_typec_smb2 && echo yes
+printf '\nRegulator status:\n'
+for d in /sys/class/regulator/regulator*; do
+ test -r "$d/name" || continue
+ test "$(cat "$d/name")" = polaris-usb-vbus || continue
+ for f in state status microamps; do printf '%s=' "$f"; cat "$d/$f"; done
+done

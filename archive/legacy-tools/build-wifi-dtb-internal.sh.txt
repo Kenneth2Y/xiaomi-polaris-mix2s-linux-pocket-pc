@@ -1,0 +1,15 @@
+#!/bin/sh
+# DTB only: retain the tested kernel, initramfs, signatures and module ABI.
+set -eu
+cd /mnt/project/build/recipe
+export CARCH=aarch64 SRCDEST=/mnt/project/build/distfiles REPODEST=/mnt/project/build/packages
+abuild -F verify
+cd src/linux-sdm845-7.1-rc1-r0
+if ! grep -q 'qcom,snoc-host-cap-skip-quirk;' arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts; then
+    patch -p1 < /mnt/project/build/recipe/0005-polaris-ath10k-host-cap-skip.patch
+fi
+make -j4 ARCH=arm64 LLVM=1 qcom/sdm845-xiaomi-polaris.dtb
+cp arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dtb /mnt/project/build/artifacts/test02/
+scripts/dtc/dtc -I dtb -O dts arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dtb \
+    > /mnt/project/logs/test02-device-tree.dts
+printf 'Wi-Fi DTB built; kernel and modules unchanged.\n'

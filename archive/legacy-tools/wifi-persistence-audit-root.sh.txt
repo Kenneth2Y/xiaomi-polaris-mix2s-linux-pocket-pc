@@ -1,0 +1,29 @@
+#!/bin/sh
+# Report only metadata and success/failure, never credential contents.
+set -eu
+set +x
+ulimit -c 0
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat NM_CLI_PAGER=cat
+credential=/etc/credstore.encrypted/polaris-wifi-low
+test "$(stat -c '%a:%U' "$credential")" = 600:root
+test "$(stat -c '%a:%U' /var/lib/systemd/credential.secret)" = 400:root
+value=$(systemd-creds --name=polaris-wifi-low decrypt "$credential" -)
+case "$value" in 802-11-wireless-security.psk:?*) echo 'Credential authenticated/decrypted and format valid.';; *) exit 1;; esac
+unset value
+systemctl is-enabled polaris-wifi-autoconnect.timer
+systemctl is-active polaris-wifi-autoconnect.timer
+systemctl show polaris-wifi-autoconnect.service -p Result -p LoadCredentialEncrypted -p MemorySwapMax
+nmcli -f connection.id,connection.autoconnect,802-11-wireless.cloned-mac-address,802-11-wireless-security.psk-flags connection show polaris-<2.4GHz热点>
+for file in /etc/NetworkManager/system-connections/*; do
+    test -f "$file" || continue
+    if grep -q '^id=polaris-PWM_' "$file"; then
+        if grep -Eq '^(psk|password|password-raw)=' "$file"; then
+            echo 'FAIL: persistent plaintext secret field'; exit 1
+        fi
+        echo 'PASS: NetworkManager profile contains no plaintext secret field.'
+    fi
+done
+printf '\nCurrent connection:\n'
+nmcli -f GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS device show wlan0
+printf '\nAutomatic connection journal:\n'
+journalctl -b -u polaris-wifi-autoconnect.service -n 12 --no-pager -o short-monotonic

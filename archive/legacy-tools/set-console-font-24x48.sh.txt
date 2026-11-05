@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+remote_command=$(cat <<'REMOTE'
+sudo -- sh -eu -c 'printf "\nPOLARIS_DMESG_BEGIN\n"; test ! -e /usr/share/consolefonts/polaris-24x48.psf; test ! -e /etc/vconsole.conf.before-polaris-font-20261104; ! grep -q "^FONT=" /etc/vconsole.conf; cp -p /etc/vconsole.conf /etc/vconsole.conf.before-polaris-font-20261104; setfont -C /dev/tty1 -d /usr/share/consolefonts/ter-124b.psf.gz; setfont -C /dev/tty1 -O /usr/share/consolefonts/polaris-24x48.psf; printf "\n# Polaris readable console font, original config backed up alongside.\nFONT=polaris-24x48\n" >> /etc/vconsole.conf; systemctl restart systemd-vconsole-setup.service; printf "Console rows/columns: "; stty -F /dev/tty1 size; printf "[persistent-config]\n"; cat /etc/vconsole.conf; sha256sum /usr/share/consolefonts/polaris-24x48.psf'
+REMOTE
+)
+ssh -F /dev/null -tt -S "$project/build/ssh/control" \
+    -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile=<用户目录>/.ssh/known_hosts \
+    -o ConnectTimeout=5 user@172.16.42.1 "$remote_command" \
+    | python3 -B -u "$project/tools/redact-log.py" --auth-until-marker \
+    | tee "$project/logs/test01-console-font-24x48.log"

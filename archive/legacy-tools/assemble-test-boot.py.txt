@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Create an offline test image. Never accesses or writes a device partition."""
+from pathlib import Path
+import hashlib
+import json
+import struct
+import zlib
+from compression import zstd
+from bootimg import BootImage, add_with_parents, module_names, read_cpio, write_cpio
+from candidate_paths import candidate
+
+paths = candidate()
+root, source, package = paths["root"], paths["source"], paths["package"]
+release = (source / "include/config/kernel.release").read_text().strip()
+if release != paths["release"]:
+    raise SystemExit("Unexpected kernel release")
+original = (root / "baseline/boot-known-ssh-20261103.img").read_bytes()
+if hashlib.sha256(original).hexdigest() != "c51af14496f0f9d63117ab1262ad0703a6ce2cde4bcd13b214e0a06cdcde4fc9":
+    raise SystemExit("Baseline hash mismatch")
+image = BootImage.parse(original)
+entries = read_cpio(zstd.decompress(image.ramdisk))
+old_modules = module_names(entries)
+old_releases = {n.split("/modules/", 1)[1].split("/", 1)[0] for n in old_modules}
+if len(old_releases) != 1:
+    raise SystemExit("Expected exactly one baseline module release")
+old_prefix = "usr/lib/modules/" + old_releases.pop()
+shared_load = next(e.data for e in entries if e.name == "usr/lib/modules/initramfs.load")
+entries = [e for e in entries if e.name != old_prefix and not e.name.startswith(old_prefix + "/")]
+stage = paths["stage"]
+module_root = stage / "usr/lib/modules" / release
+for name in ("modules.dep", "modules.dep.bin", "modules.alias", "modules.alias.bin"):
+    if not (module_root / name).is_file():
+        raise SystemExit(f"Run depmod first: {name} missing")
+for path in sorted(module_root.rglob("*")):
+    if path.is_file():
+        add_with_parents(entries, path.relative_to(stage).as_posix(), path.read_bytes())
+# Add exactly the already-present GPU firmware at the requested new path.
+old_firmware = "usr/lib/firmware/qcom/sdm845/polaris/a630_zap.mbn"
+new_firmware = "usr/lib/firmware/qcom/sdm845/Xiaomi/polaris/a630_zap.mbn"
+firmware = next(e.data for e in entries if e.name == old_firmware)
+if len(firmware) != 14256:
+    raise SystemExit("Unexpected GPU firmware size")
+add_with_parents(entries, new_firmware, firmware)
+if paths["profile"] in ("test04", "test05", "test06"):
+    add_with_parents(entries, "etc/modprobe.d/polaris-usb-test04.conf",
+                     b"# Controlled manual USB power/Type-C tests only.\n"
+                     b"blacklist qcom_pmic_typec_smb2\n"
+                     b"blacklist qcom_smbx\n"
+                     b"blacklist qcom_usb_vbus_regulator\n")
+image.ramdisk = zstd.compress(write_cpio(entries), level=9)
+kernel = (package / "boot/vmlinuz").read_bytes()
+decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+uncompressed = decoder.decompress(kernel)
+if not decoder.eof or decoder.unused_data or release.encode() not in uncompressed:
+    raise SystemExit("Expected matching gzip kernel without an appended DTB")
+dtb = (package / "boot/dtbs/qcom/sdm845-xiaomi-polaris.dtb").read_bytes()
+if dtb[:4] != b"\xd0\x0d\xfe\xed" or struct.unpack_from(">I", dtb, 4)[0] != len(dtb) or b"xiaomi,polaris\0" not in dtb:
+    raise SystemExit("Invalid or wrong-device DTB")
+image.kernel = kernel + dtb
+result = image.encode()
+partition_bytes = 131072 * 512  # Read-only sysfs observation recorded in device audit.
+if len(result) > partition_bytes:
+    raise SystemExit("Test image exceeds observed boot partition size")
+verified = BootImage.parse(result)
+if verified.kernel_and_dtb() != (kernel, dtb):
+    raise SystemExit("Appended kernel/DTB round trip failed")
+rebuilt = read_cpio(zstd.decompress(verified.ramdisk))
+if rebuilt != entries or len(module_names(rebuilt)) < len(old_modules):
+    raise SystemExit("Initramfs round trip failed")
+if any(release not in name for name in module_names(rebuilt)):
+    raise SystemExit("Old module release remains in initramfs")
+if next(e.data for e in rebuilt if e.name == "usr/lib/modules/initramfs.load") != shared_load:
+    raise SystemExit("Shared initramfs module load list changed")
+output = paths["image"]
+manifest = {
+    "image": output.name, "kernel_release": release,
+    "bytes": len(result), "observed_partition_bytes": partition_bytes,
+    "sha256": hashlib.sha256(result).hexdigest(),
+    "kernel_gzip_sha256": hashlib.sha256(kernel).hexdigest(),
+    "dtb_sha256": hashlib.sha256(dtb).hexdigest(),
+    "ramdisk_sha256": hashlib.sha256(image.ramdisk).hexdigest(),
+    "initramfs_modules": len(module_names(rebuilt)),
+    "gpu_firmware_alias": new_firmware,
+    "patches": ["0002-10nm-pll-diagnostics.patch", "0004-nt35596s-prepare-prev-first.patch"],
+    "status": "OFFLINE_VALIDATED_NOT_BOOT_TESTED",
+    "deployment_blockers": ["Provide matching modules to the complete rootfs before hardware testing",
+                            "Verify Fastboot product and recovery channel with the user",
+                            "Obtain approval for the specific device boot/flash operation"],
+}
+if paths["profile"] in ("test04", "test05", "test06"):
+    manifest.update({
+        "patches": ["0002-10nm-pll-diagnostics.patch", "0004-nt35596s-prepare-prev-first.patch",
+                    "0005-polaris-ath10k-host-cap-skip.patch", "0007-polaris-smb2-nopd-test04.patch",
+                    "0008-polaris-smb2-test04-bindings.patch"],
+        "policy": "PD rejected; 5 V VBUS, source/sink current capped at 500 mA; new power/Type-C modules blacklisted for manual tests",
+        "rollback": "images/boot-test-02-wifi.img",
+        "deployment_blockers": ["Install matching test04 modules and rootfs blacklist",
+                                "Verify all signatures and candidate/rollback images before Fastboot",
+                                "Start Type-C module with no cable attached, then controlled 5 V tests"],
+    })
+    if paths["profile"] in ("test05", "test06"):
+        manifest["patches"].append("0009-polaris-pmi8998-boost-start-test05.patch")
+        manifest["boost_startup"] = "OEM 1-in-8 halt order; OTG soft-start/fault verification; failed source attempt latched until module reload"
+        manifest["source_otg_ready_parameter"] = "default false; optional source-aware sensing still requires provider hardware-ready verification"
+if paths["profile"] == "test06":
+    manifest["patches"].extend(["0010-pmi8998-fg-fallback-current-sign.patch",
+                                "0011-polaris-smb2-default-sink-current.patch",
+                                "0012-polaris-bounded-dcp-charge-test06.patch"])
+    manifest["policy"] = "PD rejected; 5V only; DCP input <=1A, CDP <=500mA, unknown/unconfigured SDP <=100mA; battery fast charge <=750mA; OTG source remains 500mA; Type-C remains blacklisted for manual tests"
+    manifest["deployment_blockers"][0] = "Install matching test06 modules and preserve rootfs blacklist"
+    manifest["validation_pending"] = ["Actual 5V DCP input and battery current", "Source idle/Host/hotplug", "Graphical session with new kernel", "Autoload and reboot"]
+with output.open("xb") as handle:
+    handle.write(result)
+with output.with_suffix(".json").open("x") as handle:
+    json.dump(manifest, handle, indent=2)
+    handle.write("\n")
+print(json.dumps(manifest, indent=2))

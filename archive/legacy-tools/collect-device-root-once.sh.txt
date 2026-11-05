@@ -1,0 +1,16 @@
+#!/bin/bash
+# One interactive sudo invocation, only dmesg. No persistent privilege changes.
+set -euo pipefail
+project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$project"
+printf 'This reads the phone kernel log once. Enter the phone sudo password in this terminal when prompted.\n'
+remote_command=$(cat <<'REMOTE'
+sudo -- sh -c 'printf "\nPOLARIS_DMESG_BEGIN\n"; exec dmesg'
+REMOTE
+)
+ssh -F /dev/null -tt -S "$project/build/ssh/control" \
+    -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile=<用户目录>/.ssh/known_hosts \
+    -o ConnectTimeout=5 user@172.16.42.1 "$remote_command" \
+    | python3 -B -u "$project/tools/redact-log.py" --auth-until-marker \
+    | tee "$project/logs/device-dmesg-20261104.log"

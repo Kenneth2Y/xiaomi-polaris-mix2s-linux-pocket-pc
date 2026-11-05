@@ -1,0 +1,33 @@
+#!/bin/sh
+# Restore firmware lookup compatibility using existing OEM files only.
+set -eu
+source=/lib/firmware/qcom/sdm845/polaris
+target=/lib/firmware/qcom/sdm845/Xiaomi/polaris
+test -d "$source"
+mkdir -p "$target"
+for file in "$source"/*; do
+    test -f "$file"
+    name=${file##*/}
+    if test -e "$target/$name" || test -L "$target/$name"; then
+        test -f "$target/$name"
+        old=$(sha256sum "$file"); new=$(sha256sum "$target/$name")
+        test "${old%% *}" = "${new%% *}"
+        printf 'Existing firmware target verified: %s\n' "$name"
+    else
+        ln -s "../../polaris/$name" "$target/$name"
+        printf 'Added firmware alias: %s\n' "$name"
+    fi
+done
+# This is a controlled retry of the existing auto-boot remoteproc, not a flash.
+# ModemManager is inactive and no cellular connection profile is configured.
+processor=/sys/class/remoteproc/remoteproc1
+test "$(cat "$processor/name")" = 4080000.remoteproc
+test "$(cat "$processor/firmware")" = qcom/sdm845/Xiaomi/polaris/mba.mbn
+state=$(cat "$processor/state")
+printf 'mpss previous state: %s\n' "$state"
+if test "$state" = offline; then
+    printf start > "$processor/state"
+fi
+printf 'mpss current state: '; cat "$processor/state"
+printf '\nWireless interfaces immediately after retry:\n'
+ls /sys/class/ieee80211

@@ -1,0 +1,56 @@
+From: Polaris Lab <polaris@localhost>
+Subject: [PATCH] usb: typec: polaris-smb2: provide default USB sink limit
+
+TCPM uses get_current_limit() for Rp-default attachments and selects zero
+when the callback is absent. The SMB2 backend only supplied the setter,
+so a default-current charger reached SNK_READY with a zero input limit.
+This was reproduced with a power bank: 5.08 V was present, but measured
+input was only 28 mA and the battery was discharging.
+
+Read the charger BC1.2 type and allow a conservative 500 mA for DCP/CDP.
+Unknown sources and unconfigured SDP attachments use one 100 mA USB2
+unit. Preserve the board input cap and do not enable PD or fast charging.
+
+Signed-off-by: Polaris Lab <polaris@localhost>
+---
+diff --git a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c
+--- a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c
++++ b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c
+@@ -133,6 +133,29 @@
+ 	return ret;
+ }
+ 
++/* TCPM needs a BC1.2-derived limit when Rp advertises USB default. */
++static int smb2_typec_get_current_limit(struct tcpc_dev *tcpc)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	union power_supply_propval value;
++	int ret;
++
++	ret = power_supply_get_property(tcpm->charger,
++				       POWER_SUPPLY_PROP_USB_TYPE, &value);
++	if (ret)
++		return 100;
++
++	switch (value.intval) {
++	case POWER_SUPPLY_USB_TYPE_DCP:
++	case POWER_SUPPLY_USB_TYPE_CDP:
++		/* Keep the polaris experiment below 500 mA, even on a DCP. */
++		return 500;
++	default:
++		/* Unknown and unconfigured SDP sources get only one USB2 unit. */
++		return 100;
++	}
++}
++
+ static int smb2_typec_set_current_limit(struct tcpc_dev *tcpc, u32 max_ma,
+ 					u32 mv)
+ {
+@@ -194,6 +217,7 @@
+ 	tcpm->dev = dev;
+ 	tcpm->tcpc.init = smb2_typec_init;
+ 	tcpm->tcpc.set_current_limit = smb2_typec_set_current_limit;
++	tcpm->tcpc.get_current_limit = smb2_typec_get_current_limit;
+ 	tcpm->tcpc.fwnode = device_get_named_child_node(dev, "connector");
+ 	if (!tcpm->tcpc.fwnode)
+ 		return dev_err_probe(dev, -EINVAL, "missing connector node\n");

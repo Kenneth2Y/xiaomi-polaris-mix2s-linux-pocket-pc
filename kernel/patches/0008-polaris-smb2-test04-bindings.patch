@@ -1,0 +1,381 @@
+From: Polaris Lab <polaris@localhost>
+Subject: [PATCH] dt-bindings: describe the experimental polaris SMB2 profile
+
+Adapt Sam Day's SMB2 Type-C schema to this target tree and describe the
+PMI8998 VBUS compatible and optional charger input-current cap.
+
+Signed-off-by: Polaris Lab <polaris@localhost>
+---
+diff --git a/Documentation/devicetree/bindings/usb/qcom,pmic-typec.yaml b/Documentation/devicetree/bindings/usb/qcom,pmic-typec.yaml
+--- a/Documentation/devicetree/bindings/usb/qcom,pmic-typec.yaml
++++ b/Documentation/devicetree/bindings/usb/qcom,pmic-typec.yaml
+@@ -10,13 +10,16 @@
+   - Bryan O'Donoghue <bryan.odonoghue@linaro.org>
+ 
+ description:
+-  Qualcomm PMIC Type-C block
++  Qualcomm PMIC Type-C block, including the eight-interrupt SMB2 generation
++  used by PM660 and PMI8998.
+ 
+ properties:
+   compatible:
+     oneOf:
+       - enum:
++          - qcom,pm660-typec
+           - qcom,pmi632-typec
++          - qcom,pmi8998-typec
+           - qcom,pm8150b-typec
+       - items:
+           - enum:
+@@ -24,8 +27,7 @@
+               - qcom,pm7250b-typec
+           - const: qcom,pm8150b-typec
+       - items:
+-          - enum:
+-              - qcom,pm4125-typec
++          - const: qcom,pm4125-typec
+           - const: qcom,pmi632-typec
+ 
+   connector:
+@@ -34,75 +36,68 @@
+     unevaluatedProperties: false
+ 
+   reg:
+-    description: Type-C port and pdphy SPMI register base offsets
++    description: Type-C port and optional PD PHY SPMI register base offsets.
+     minItems: 1
+     maxItems: 2
+ 
+   interrupts:
+     minItems: 8
+-    items:
+-      - description: Type-C CC attach notification, VBUS error, tCCDebounce done
+-      - description: Type-C VCONN powered
+-      - description: Type-C CC state change
+-      - description: Type-C VCONN over-current
+-      - description: Type-C VBUS state change
+-      - description: Type-C Attach/detach notification
+-      - description: Type-C Legacy cable detect
+-      - description: Type-C Try.Src Try.Snk state change
+-      - description: Power Domain Signal TX - HardReset or CableReset signal TX
+-      - description: Power Domain Signal RX - HardReset or CableReset signal RX
+-      - description: Power Domain TX complete
+-      - description: Power Domain RX complete
+-      - description: Power Domain TX fail
+-      - description: Power Domain TX message discard
+-      - description: Power Domain RX message discard
+-      - description: Power Domain Fast Role Swap event
++    maxItems: 16
+ 
+   interrupt-names:
+     minItems: 8
++    maxItems: 16
+     items:
+-      - const: or-rid-detect-change
+-      - const: vpd-detect
+-      - const: cc-state-change
+-      - const: vconn-oc
+-      - const: vbus-change
+-      - const: attach-detach
+-      - const: legacy-cable-detect
+-      - const: try-snk-src-detect
+-      - const: sig-tx
+-      - const: sig-rx
+-      - const: msg-tx
+-      - const: msg-rx
+-      - const: msg-tx-failed
+-      - const: msg-tx-discarded
+-      - const: msg-rx-discarded
+-      - const: fr-swap
++      enum:
++        - or-rid-detect-change
++        - vpd-detect
++        - cc-state-change
++        - vconn-oc
++        - vbus-change
++        - attach-detach
++        - legacy-cable-detect
++        - try-snk-src-detect
++        - type-c-change
++        - sig-tx
++        - sig-rx
++        - msg-tx
++        - msg-rx
++        - msg-tx-failed
++        - msg-tx-discarded
++        - msg-rx-discarded
++        - fr-swap
++
++  charger-power-supply:
++    description:
++      Charger power-supply provider used for probe ordering and negotiated
++      input-current propagation. The SMB2 Type-C driver creates a device link
++      to this provider before accessing shared Type-C registers.
+ 
+   vdd-vbus-supply:
+-    description: VBUS power supply.
++    deprecated: true
++    description:
++      Baseline-compatible VBUS regulator phandle. New SMB2 consumers obtain
++      the same regulator from connector/vbus-supply.
+ 
+   vdd-pdphy-supply:
+-    description: VDD regulator supply to the PDPHY.
++    description: VDD regulator supply to the PD PHY.
+ 
+   port:
+     $ref: /schemas/graph.yaml#/properties/port
+-    description:
+-      Contains a port which produces data-role switching messages.
++    description: Data-role switching graph endpoint.
+ 
+ required:
+   - compatible
+   - reg
+   - interrupts
+   - interrupt-names
+-  - vdd-vbus-supply
+ 
+ allOf:
+   - if:
+       properties:
+         compatible:
+           contains:
+-            enum:
+-              - qcom,pmi632-typec
++            const: qcom,pmi632-typec
+     then:
+       properties:
+         reg:
+@@ -110,139 +105,80 @@
+         interrupts:
+           maxItems: 8
+         interrupt-names:
+-          maxItems: 8
++          items:
++            - const: or-rid-detect-change
++            - const: vpd-detect
++            - const: cc-state-change
++            - const: vconn-oc
++            - const: vbus-change
++            - const: attach-detach
++            - const: legacy-cable-detect
++            - const: try-snk-src-detect
+         vdd-pdphy-supply: false
+-    else:
++
++  - if:
++      properties:
++        compatible:
++          contains:
++            enum:
++              - qcom,pm660-typec
++              - qcom,pmi8998-typec
++    then:
+       properties:
+         reg:
++          minItems: 2
++          maxItems: 2
++        interrupts:
++          minItems: 8
++          maxItems: 8
++        interrupt-names:
++          items:
++            - const: type-c-change
++            - const: sig-tx
++            - const: sig-rx
++            - const: msg-tx
++            - const: msg-rx
++            - const: msg-tx-failed
++            - const: msg-tx-discarded
++            - const: msg-rx-discarded
++      required:
++        - charger-power-supply
++        - connector
++        - vdd-pdphy-supply
++        - vdd-vbus-supply
++
++  - if:
++      properties:
++        compatible:
++          contains:
++            const: qcom,pm8150b-typec
++    then:
++      properties:
++        reg:
++          minItems: 2
+           maxItems: 2
+         interrupts:
+           minItems: 16
++          maxItems: 16
+         interrupt-names:
+-          maxItems: 16
++          items:
++            - const: or-rid-detect-change
++            - const: vpd-detect
++            - const: cc-state-change
++            - const: vconn-oc
++            - const: vbus-change
++            - const: attach-detach
++            - const: legacy-cable-detect
++            - const: try-snk-src-detect
++            - const: sig-tx
++            - const: sig-rx
++            - const: msg-tx
++            - const: msg-rx
++            - const: msg-tx-failed
++            - const: msg-tx-discarded
++            - const: msg-rx-discarded
++            - const: fr-swap
+       required:
+         - vdd-pdphy-supply
+ 
+ additionalProperties: false
+-
+-examples:
+-  - |
+-    #include <dt-bindings/interrupt-controller/arm-gic.h>
+-    #include <dt-bindings/usb/pd.h>
+-
+-    pmic {
+-        #address-cells = <1>;
+-        #size-cells = <0>;
+-
+-        pm8150b_typec: typec@1500 {
+-            compatible = "qcom,pm8150b-typec";
+-            reg = <0x1500>,
+-                  <0x1700>;
+-
+-            interrupts = <0x2 0x15 0x00 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x15 0x01 IRQ_TYPE_EDGE_BOTH>,
+-                         <0x2 0x15 0x02 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x15 0x03 IRQ_TYPE_EDGE_BOTH>,
+-                         <0x2 0x15 0x04 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x15 0x05 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x15 0x06 IRQ_TYPE_EDGE_BOTH>,
+-                         <0x2 0x15 0x07 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x17 0x00 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x17 0x01 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x17 0x02 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x17 0x03 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x17 0x04 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x17 0x05 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x17 0x06 IRQ_TYPE_EDGE_RISING>,
+-                         <0x2 0x17 0x07 IRQ_TYPE_EDGE_RISING>;
+-
+-            interrupt-names = "or-rid-detect-change",
+-                              "vpd-detect",
+-                              "cc-state-change",
+-                              "vconn-oc",
+-                              "vbus-change",
+-                              "attach-detach",
+-                              "legacy-cable-detect",
+-                              "try-snk-src-detect",
+-                              "sig-tx",
+-                              "sig-rx",
+-                              "msg-tx",
+-                              "msg-rx",
+-                              "msg-tx-failed",
+-                              "msg-tx-discarded",
+-                              "msg-rx-discarded",
+-                              "fr-swap";
+-
+-            vdd-vbus-supply = <&pm8150b_vbus>;
+-            vdd-pdphy-supply = <&vreg_l2a_3p1>;
+-
+-            connector {
+-                compatible = "usb-c-connector";
+-
+-                power-role = "source";
+-                data-role = "dual";
+-                self-powered;
+-
+-                source-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
+-                               PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)>;
+-
+-                ports {
+-                    #address-cells = <1>;
+-                    #size-cells = <0>;
+-
+-                    port@0 {
+-                        reg = <0>;
+-                        pmic_typec_hs_in: endpoint {
+-                            remote-endpoint = <&usb_hs_out>;
+-                        };
+-                    };
+-
+-                    port@1 {
+-                        reg = <1>;
+-                        pmic_typec_ss_in: endpoint {
+-                            remote-endpoint = <&usb_phy_typec_ss_out>;
+-                        };
+-                    };
+-
+-                    port@2 {
+-                        reg = <2>;
+-                        pmic_typec_sbu: endpoint {
+-                            remote-endpoint = <&usb_mux_sbu>;
+-                        };
+-                    };
+-                };
+-            };
+-        };
+-    };
+-
+-    usb {
+-        dr_mode = "otg";
+-        usb-role-switch;
+-        port {
+-            usb_hs_out: endpoint {
+-                remote-endpoint = <&pmic_typec_hs_in>;
+-            };
+-        };
+-    };
+-
+-    usb-phy {
+-        orientation-switch;
+-        port {
+-            usb_phy_typec_ss_out: endpoint {
+-                remote-endpoint = <&pmic_typec_ss_in>;
+-            };
+-        };
+-    };
+-
+-    usb-mux {
+-        orientation-switch;
+-        mode-switch;
+-
+-        port {
+-            usb_mux_sbu: endpoint {
+-                remote-endpoint = <&pmic_typec_sbu>;
+-            };
+-        };
+-    };
+-
+-...
+diff --git a/Documentation/devicetree/bindings/regulator/qcom,usb-vbus-regulator.yaml b/Documentation/devicetree/bindings/regulator/qcom,usb-vbus-regulator.yaml
+--- a/Documentation/devicetree/bindings/regulator/qcom,usb-vbus-regulator.yaml
++++ b/Documentation/devicetree/bindings/regulator/qcom,usb-vbus-regulator.yaml
+@@ -22,6 +22,7 @@
+     oneOf:
+       - enum:
+           - qcom,pm8150b-vbus-reg
++          - qcom,pmi8998-vbus-reg
+       - items:
+           - enum:
+               - qcom,pm4125-vbus-reg
+diff --git a/Documentation/devicetree/bindings/power/supply/qcom,pmi8998-charger.yaml b/Documentation/devicetree/bindings/power/supply/qcom,pmi8998-charger.yaml
+--- a/Documentation/devicetree/bindings/power/supply/qcom,pmi8998-charger.yaml
++++ b/Documentation/devicetree/bindings/power/supply/qcom,pmi8998-charger.yaml
+@@ -42,6 +42,11 @@
+ 
+   monitored-battery: true
+ 
++  input-current-limit-microamp:
++    description: Upper bound applied to APSD and Type-C input-current requests.
++    minimum: 25000
++    maximum: 1500000
++
+ required:
+   - compatible
+   - reg

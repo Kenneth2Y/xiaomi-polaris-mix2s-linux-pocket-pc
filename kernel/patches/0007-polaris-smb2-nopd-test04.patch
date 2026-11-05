@@ -1,0 +1,3316 @@
+From: Polaris Lab <polaris@localhost>
+Subject: [PATCH] usb: add a controlled polaris SMB2 no-PD test profile
+
+Import Sam Day's standalone SMB2 Type-C sources, retaining their license.
+Upstream revision: 4164801fa70216a8687cdfdc57026df740926a14.
+The reference has not been tested on phones.
+This is an experimental profile.
+Reject PD-enabled connectors, use a correct PMI8998 250 mA current table,
+limit source and sink current to 500 mA, and honor the battery charge cap.
+Keep the new power/Type-C modules blacklisted for controlled testing.
+OEM battery profiles provide the 4.4 V maximum; do not increase it.
+
+Signed-off-by: Polaris Lab <polaris@localhost>
+---
+diff --git a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec.h b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec.h
+--- /dev/null
++++ b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec.h
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (c) 2023, Linaro Ltd. All rights reserved.
++ */
++
++#ifndef __QCOM_PMIC_TYPEC_H__
++#define __QCOM_PMIC_TYPEC_H__
++
++struct power_supply;
++
++struct pmic_typec {
++	struct device		*dev;
++	struct tcpm_port	*tcpm_port;
++	struct tcpc_dev		tcpc;
++	struct pmic_typec_pdphy	*pmic_typec_pdphy;
++	struct pmic_typec_port	*pmic_typec_port;
++	struct power_supply	*charger;
++
++	bool			pd_disabled;
++	bool			pbs_wa;
++	bool			cc2_detach_wa;
++
++	int (*pdphy_start)(struct pmic_typec *tcpm,
++				   struct tcpm_port *tcpm_port);
++	void (*pdphy_quiesce)(struct pmic_typec *tcpm);
++	void (*pdphy_stop)(struct pmic_typec *tcpm);
++
++	int (*port_start)(struct pmic_typec *tcpm,
++				  struct tcpm_port *tcpm_port);
++	void (*port_quiesce)(struct pmic_typec *tcpm);
++	void (*port_stop)(struct pmic_typec *tcpm);
++};
++
++#define tcpc_to_tcpm(_tcpc_) container_of(_tcpc_, struct pmic_typec, tcpc)
++
++#endif
+diff --git a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_pdphy.c b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_pdphy.c
+--- /dev/null
++++ b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_pdphy.c
+@@ -0,0 +1,1020 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2023, Linaro Ltd. All rights reserved.
++ */
++
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/kernel.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <linux/slab.h>
++#include <linux/string_choices.h>
++#include <linux/usb/pd.h>
++#include <linux/usb/tcpm.h>
++#include "qcom_pmic_typec.h"
++#include "qcom_pmic_typec_pdphy.h"
++
++/* PD PHY register offsets and bit fields */
++#define USB_PDPHY_MSG_CONFIG_REG	0x40
++#define MSG_CONFIG_PORT_DATA_ROLE	BIT(3)
++#define MSG_CONFIG_PORT_POWER_ROLE	BIT(2)
++#define MSG_CONFIG_SPEC_REV_MASK	(BIT(1) | BIT(0))
++
++#define USB_PDPHY_EN_CONTROL_REG	0x46
++#define CONTROL_ENABLE			BIT(0)
++
++#define USB_PDPHY_RX_STATUS_REG		0x4A
++#define RX_FRAME_TYPE			(BIT(0) | BIT(1) | BIT(2))
++
++#define USB_PDPHY_FRAME_FILTER_REG	0x4C
++#define FRAME_FILTER_EN_HARD_RESET	BIT(5)
++#define FRAME_FILTER_EN_SOP		BIT(0)
++
++#define USB_PDPHY_TX_SIZE_REG		0x42
++#define TX_SIZE_MASK			0xF
++
++#define USB_PDPHY_TX_CONTROL_REG	0x44
++#define TX_CONTROL_RETRY_COUNT(n)	(((n) & 0x3) << 5)
++#define TX_CONTROL_FRAME_TYPE(n)        (((n) & 0x7) << 2)
++#define TX_CONTROL_FRAME_TYPE_CABLE_RESET	(0x1 << 2)
++#define TX_CONTROL_SEND_SIGNAL		BIT(1)
++#define TX_CONTROL_SEND_MSG		BIT(0)
++
++#define USB_PDPHY_RX_SIZE_REG		0x48
++
++#define USB_PDPHY_RX_ACKNOWLEDGE_REG	0x4B
++#define RX_BUFFER_TOKEN			BIT(0)
++
++#define USB_PDPHY_BIST_MODE_REG		0x4E
++#define BIST_MODE_MASK			0xF
++#define BIST_ENABLE			BIT(7)
++#define PD_MSG_BIST			0x3
++#define PD_BIST_CARRIER_MODE_2		0x5
++#define PD_BIST_TEST_DATA_MODE		0x8
++
++#define USB_PDPHY_TX_BUFFER_HDR_REG	0x60
++#define USB_PDPHY_TX_BUFFER_DATA_REG	0x62
++
++#define USB_PDPHY_RX_BUFFER_REG		0x80
++
++#define USB_PDPHY_SEC_ACCESS_REG	0xD0
++#define USB_PDPHY_SEC_ACCESS_VALUE	0xA5
++#define USB_PDPHY_TRIM_3_REG		0xF3
++#define USB_PDPHY_TRIM_3_VALUE		0x02
++
++/* VDD regulator */
++#define VDD_PDPHY_VOL_MIN		2800000	/* uV */
++#define VDD_PDPHY_VOL_MAX		3300000	/* uV */
++#define VDD_PDPHY_HPM_LOAD		3000	/* uA */
++
++/* timers */
++#define RECEIVER_RESPONSE_TIME		15	/* tReceiverResponse */
++#define HARD_RESET_COMPLETE_TIME	5	/* tHardResetComplete */
++
++/* Interrupt numbers */
++#define PMIC_PDPHY_SIG_TX_IRQ		0x0
++#define PMIC_PDPHY_SIG_RX_IRQ		0x1
++#define PMIC_PDPHY_MSG_TX_IRQ		0x2
++#define PMIC_PDPHY_MSG_RX_IRQ		0x3
++#define PMIC_PDPHY_MSG_TX_FAIL_IRQ	0x4
++#define PMIC_PDPHY_MSG_TX_DISCARD_IRQ	0x5
++#define PMIC_PDPHY_MSG_RX_DISCARD_IRQ	0x6
++#define PMIC_PDPHY_FR_SWAP_IRQ		0x7
++
++
++struct pmic_typec_pdphy_irq_data {
++	int				virq;
++	int				irq;
++	struct pmic_typec_pdphy		*pmic_typec_pdphy;
++};
++
++struct pmic_typec_pdphy {
++	struct device			*dev;
++	struct tcpm_port		*tcpm_port;
++	struct regmap			*regmap;
++	u32				base;
++
++	unsigned int			nr_irqs;
++	struct pmic_typec_pdphy_irq_data	*irq_data;
++
++	struct work_struct		reset_work;
++	struct regulator		*vdd_pdphy;
++	struct mutex			lock;		/* Register serialization */
++	enum tcpm_transmit_type		tx_type;
++	bool				tx_pending;
++	bool				started;
++	bool				irqs_enabled;
++};
++
++static bool qcom_pmic_typec_pdphy_tx_is_signal(enum tcpm_transmit_type type)
++{
++	return type == TCPC_TX_HARD_RESET || type == TCPC_TX_CABLE_RESET ||
++	       type == TCPC_TX_BIST_MODE_2;
++}
++
++/* The caller must hold pmic_typec_pdphy->lock. */
++static bool
++qcom_pmic_typec_pdphy_take_tx_locked(struct pmic_typec_pdphy *pmic_typec_pdphy,
++				     bool signal,
++				     struct tcpm_port **tcpm_port,
++				     enum tcpm_transmit_type *type)
++{
++	if (!pmic_typec_pdphy->tx_pending ||
++	    qcom_pmic_typec_pdphy_tx_is_signal(pmic_typec_pdphy->tx_type) != signal)
++		return false;
++
++	if (tcpm_port)
++		*tcpm_port = pmic_typec_pdphy->tcpm_port;
++	if (type)
++		*type = pmic_typec_pdphy->tx_type;
++	pmic_typec_pdphy->tx_pending = false;
++	pmic_typec_pdphy->tx_type = TCPC_TX_SOP;
++
++	return true;
++}
++
++/* The caller must hold pmic_typec_pdphy->lock. */
++static bool
++qcom_pmic_typec_pdphy_abort_tx_locked(struct pmic_typec_pdphy *pmic_typec_pdphy,
++				      struct tcpm_port **tcpm_port)
++{
++	if (!pmic_typec_pdphy->tx_pending)
++		return false;
++
++	if (tcpm_port)
++		*tcpm_port = pmic_typec_pdphy->tcpm_port;
++	pmic_typec_pdphy->tx_pending = false;
++	pmic_typec_pdphy->tx_type = TCPC_TX_SOP;
++
++	return true;
++}
++
++static int qcom_pmic_typec_pdphy_reset_on(struct pmic_typec_pdphy *pmic_typec_pdphy)
++{
++	struct device *dev = pmic_typec_pdphy->dev;
++	int first_error = 0;
++	int ret;
++
++	/* Terminate TX */
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++				   pmic_typec_pdphy->base + USB_PDPHY_TX_CONTROL_REG, 0);
++	if (ret && !first_error)
++		first_error = ret;
++
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++				   pmic_typec_pdphy->base + USB_PDPHY_FRAME_FILTER_REG, 0);
++	if (ret && !first_error)
++		first_error = ret;
++
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++				   pmic_typec_pdphy->base + USB_PDPHY_BIST_MODE_REG, 0);
++	if (ret && !first_error)
++		first_error = ret;
++
++	if (first_error)
++		dev_err(dev, "pd_reset_on error: %d\n", first_error);
++
++	return first_error;
++}
++
++static int qcom_pmic_typec_pdphy_reset_off(struct pmic_typec_pdphy *pmic_typec_pdphy)
++{
++	struct device *dev = pmic_typec_pdphy->dev;
++	int ret;
++
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++			   pmic_typec_pdphy->base + USB_PDPHY_FRAME_FILTER_REG,
++			   FRAME_FILTER_EN_SOP | FRAME_FILTER_EN_HARD_RESET);
++	if (ret)
++		dev_err(dev, "pd_reset_off error: %d\n", ret);
++
++	return ret;
++}
++
++static void qcom_pmic_typec_pdphy_sig_reset_work(struct work_struct *work)
++{
++	struct pmic_typec_pdphy *pmic_typec_pdphy = container_of(work, struct pmic_typec_pdphy,
++							     reset_work);
++	struct tcpm_port *tcpm_port = NULL;
++	unsigned int rx_status;
++	bool hard_reset = false;
++	bool tx_aborted = false;
++	int ret;
++
++	mutex_lock(&pmic_typec_pdphy->lock);
++	if (!pmic_typec_pdphy->started)
++		goto unlock;
++
++	ret = regmap_read(pmic_typec_pdphy->regmap,
++			  pmic_typec_pdphy->base + USB_PDPHY_RX_STATUS_REG,
++			  &rx_status);
++	if (ret) {
++		dev_err(pmic_typec_pdphy->dev,
++			"failed to read received PD signal: %d\n", ret);
++		goto unlock;
++	}
++	if (rx_status & RX_FRAME_TYPE) {
++		dev_warn_ratelimited(pmic_typec_pdphy->dev,
++				     "ignoring unsupported PD signal %#x\n",
++				     (unsigned int)(rx_status & RX_FRAME_TYPE));
++		goto unlock;
++	}
++
++	qcom_pmic_typec_pdphy_reset_on(pmic_typec_pdphy);
++	tx_aborted = qcom_pmic_typec_pdphy_abort_tx_locked(pmic_typec_pdphy,
++							      &tcpm_port);
++	/* The received signal remains authoritative even if cleanup failed. */
++	tcpm_port = pmic_typec_pdphy->tcpm_port;
++	hard_reset = true;
++
++unlock:
++	mutex_unlock(&pmic_typec_pdphy->lock);
++
++	if (tx_aborted && tcpm_port)
++		tcpm_pd_transmit_complete(tcpm_port, TCPC_TX_DISCARDED);
++	if (hard_reset && tcpm_port)
++		tcpm_pd_hard_reset(tcpm_port);
++}
++
++static int
++qcom_pmic_typec_pdphy_clear_tx_control_reg(struct pmic_typec_pdphy *pmic_typec_pdphy)
++{
++	struct device *dev = pmic_typec_pdphy->dev;
++	unsigned int val;
++	int ret;
++
++	/* Clear TX control register */
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++			   pmic_typec_pdphy->base + USB_PDPHY_TX_CONTROL_REG, 0);
++	if (ret)
++		goto done;
++
++	/* Perform readback to ensure sufficient delay for command to latch */
++	ret = regmap_read(pmic_typec_pdphy->regmap,
++			  pmic_typec_pdphy->base + USB_PDPHY_TX_CONTROL_REG, &val);
++
++done:
++	if (ret)
++		dev_err(dev, "pd_clear_tx_control_reg: clear tx flag\n");
++
++	return ret;
++}
++
++static int
++qcom_pmic_typec_pdphy_pd_transmit_signal(struct pmic_typec_pdphy *pmic_typec_pdphy,
++					 enum tcpm_transmit_type type,
++					 unsigned int negotiated_rev)
++{
++	struct device *dev = pmic_typec_pdphy->dev;
++	unsigned int val;
++	int ret;
++
++	mutex_lock(&pmic_typec_pdphy->lock);
++	if (!pmic_typec_pdphy->started) {
++		ret = -ESHUTDOWN;
++		goto done;
++	}
++	if (pmic_typec_pdphy->tx_pending) {
++		ret = -EBUSY;
++		goto done;
++	}
++
++	/* Clear TX control register */
++	ret = qcom_pmic_typec_pdphy_clear_tx_control_reg(pmic_typec_pdphy);
++	if (ret)
++		goto done;
++
++	switch (type) {
++	case TCPC_TX_HARD_RESET:
++		val = TX_CONTROL_SEND_SIGNAL;
++		break;
++	case TCPC_TX_CABLE_RESET:
++		val = TX_CONTROL_FRAME_TYPE_CABLE_RESET |
++		      TX_CONTROL_SEND_SIGNAL;
++		break;
++	case TCPC_TX_BIST_MODE_2:
++		ret = regmap_write(pmic_typec_pdphy->regmap,
++					   pmic_typec_pdphy->base + USB_PDPHY_BIST_MODE_REG,
++					   BIST_ENABLE | PD_BIST_CARRIER_MODE_2);
++		if (ret)
++			goto done;
++		goto started;
++	default:
++		ret = -EINVAL;
++		goto done;
++	}
++
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++			   pmic_typec_pdphy->base + USB_PDPHY_TX_CONTROL_REG, val);
++	if (ret)
++		goto done;
++
++started:
++	pmic_typec_pdphy->tx_type = type;
++	pmic_typec_pdphy->tx_pending = true;
++
++done:
++	mutex_unlock(&pmic_typec_pdphy->lock);
++
++	dev_vdbg(dev, "pd_transmit_signal: type %d negotiate_rev %d send %d\n",
++		 type, negotiated_rev, ret);
++
++	return ret;
++}
++
++static int
++qcom_pmic_typec_pdphy_pd_transmit_payload(struct pmic_typec_pdphy *pmic_typec_pdphy,
++					  enum tcpm_transmit_type type,
++					  const struct pd_message *msg,
++					  unsigned int negotiated_rev)
++{
++	struct device *dev = pmic_typec_pdphy->dev;
++	unsigned int val, hdr_len = 0, txbuf_len = 0, txsize_len;
++	int ret;
++
++	mutex_lock(&pmic_typec_pdphy->lock);
++	if (!pmic_typec_pdphy->started) {
++		ret = -ESHUTDOWN;
++		goto done;
++	}
++	if (pmic_typec_pdphy->tx_pending) {
++		ret = -EBUSY;
++		goto done;
++	}
++
++	hdr_len = sizeof(msg->header);
++	txbuf_len = pd_header_cnt_le(msg->header) * 4;
++	txsize_len = hdr_len + txbuf_len - 1;
++
++	ret = regmap_read(pmic_typec_pdphy->regmap,
++			  pmic_typec_pdphy->base + USB_PDPHY_RX_ACKNOWLEDGE_REG,
++			  &val);
++	if (ret)
++		goto done;
++
++	if (val) {
++		dev_err(dev, "pd_transmit_payload: RX message pending\n");
++		ret = -EBUSY;
++		goto done;
++	}
++
++	/* Clear TX control register */
++	ret = qcom_pmic_typec_pdphy_clear_tx_control_reg(pmic_typec_pdphy);
++	if (ret)
++		goto done;
++
++	/* Write message header sizeof(u16) to USB_PDPHY_TX_BUFFER_HDR_REG */
++	ret = regmap_bulk_write(pmic_typec_pdphy->regmap,
++				pmic_typec_pdphy->base + USB_PDPHY_TX_BUFFER_HDR_REG,
++				&msg->header, hdr_len);
++	if (ret)
++		goto done;
++
++	/* Write payload to USB_PDPHY_TX_BUFFER_DATA_REG for txbuf_len */
++	if (txbuf_len) {
++		ret = regmap_bulk_write(pmic_typec_pdphy->regmap,
++					pmic_typec_pdphy->base + USB_PDPHY_TX_BUFFER_DATA_REG,
++					&msg->payload, txbuf_len);
++		if (ret)
++			goto done;
++	}
++
++	/* Write total length ((header + data) - 1) to USB_PDPHY_TX_SIZE_REG */
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++			   pmic_typec_pdphy->base + USB_PDPHY_TX_SIZE_REG,
++			   txsize_len);
++	if (ret)
++		goto done;
++
++	/* Clear TX control register */
++	ret = qcom_pmic_typec_pdphy_clear_tx_control_reg(pmic_typec_pdphy);
++	if (ret)
++		goto done;
++
++	/* Initiate transmit with retry count as indicated by PD revision */
++	val = TX_CONTROL_FRAME_TYPE(type) | TX_CONTROL_SEND_MSG;
++	if (negotiated_rev == PD_REV30)
++		val |= TX_CONTROL_RETRY_COUNT(2);
++	else
++		val |= TX_CONTROL_RETRY_COUNT(3);
++
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++			   pmic_typec_pdphy->base + USB_PDPHY_TX_CONTROL_REG, val);
++	if (!ret) {
++		pmic_typec_pdphy->tx_type = type;
++		pmic_typec_pdphy->tx_pending = true;
++	}
++
++done:
++	mutex_unlock(&pmic_typec_pdphy->lock);
++
++	if (ret) {
++		dev_err(dev, "pd_transmit_payload: hdr %*ph data %*ph ret %d\n",
++			hdr_len, &msg->header, txbuf_len, &msg->payload, ret);
++	}
++
++	return ret;
++}
++
++static int qcom_pmic_typec_pdphy_pd_transmit(struct tcpc_dev *tcpc,
++					     enum tcpm_transmit_type type,
++					     const struct pd_message *msg,
++					     unsigned int negotiated_rev)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct pmic_typec_pdphy *pmic_typec_pdphy = tcpm->pmic_typec_pdphy;
++	struct device *dev = pmic_typec_pdphy->dev;
++	int ret;
++
++	if (negotiated_rev != PD_REV20) {
++		dev_err(dev, "refusing unsupported PD revision %u\n",
++			negotiated_rev);
++		return -EOPNOTSUPP;
++	}
++	if (msg && pd_header_rev_le(msg->header) != PD_REV20) {
++		dev_err(dev, "refusing message with unsupported PD revision %u\n",
++			pd_header_rev_le(msg->header));
++		return -EOPNOTSUPP;
++	}
++
++	if (msg) {
++		ret = qcom_pmic_typec_pdphy_pd_transmit_payload(pmic_typec_pdphy,
++								type, msg,
++								negotiated_rev);
++	} else {
++		ret = qcom_pmic_typec_pdphy_pd_transmit_signal(pmic_typec_pdphy,
++							       type,
++							       negotiated_rev);
++	}
++
++	if (ret)
++		dev_dbg(dev, "pd_transmit: type %x result %d\n", type, ret);
++
++	return ret;
++}
++
++static void qcom_pmic_typec_pdphy_pd_receive(struct pmic_typec_pdphy *pmic_typec_pdphy,
++					     struct tcpm_port *tcpm_port)
++{
++	struct device *dev = pmic_typec_pdphy->dev;
++	struct pd_message msg;
++	unsigned int size, rx_status;
++	bool release_buffer = false;
++	int ret;
++
++	memset(&msg, 0, sizeof(msg));
++
++	mutex_lock(&pmic_typec_pdphy->lock);
++
++	ret = regmap_read(pmic_typec_pdphy->regmap,
++			  pmic_typec_pdphy->base + USB_PDPHY_RX_SIZE_REG, &size);
++	if (ret)
++		goto done;
++	release_buffer = true;
++
++	/* Hardware requires +1 of the real read value to be passed */
++	if (size < 1 || size > sizeof(msg.payload) + 1) {
++		dev_dbg(dev, "pd_receive: invalid size %d\n", size);
++		ret = -EINVAL;
++		goto done;
++	}
++
++	size += 1;
++	ret = regmap_read(pmic_typec_pdphy->regmap,
++			  pmic_typec_pdphy->base + USB_PDPHY_RX_STATUS_REG,
++			  &rx_status);
++
++	if (ret)
++		goto done;
++	if (rx_status & RX_FRAME_TYPE) {
++		dev_warn_ratelimited(dev, "unsupported PD frame type %#x\n",
++				     (unsigned int)(rx_status & RX_FRAME_TYPE));
++		ret = -EOPNOTSUPP;
++		goto done;
++	}
++
++	ret = regmap_bulk_read(pmic_typec_pdphy->regmap,
++			       pmic_typec_pdphy->base + USB_PDPHY_RX_BUFFER_REG,
++			       (u8 *)&msg, size);
++	if (ret)
++		goto done;
++	if (size != sizeof(msg.header) + pd_header_cnt_le(msg.header) * 4) {
++		dev_warn_ratelimited(dev,
++				     "PD header count does not match %u-byte frame\n",
++				     size);
++		ret = -EBADMSG;
++		goto done;
++	}
++
++	/* Return ownership of RX buffer to hardware */
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++			   pmic_typec_pdphy->base + USB_PDPHY_RX_ACKNOWLEDGE_REG, 0);
++	if (!ret)
++		release_buffer = false;
++
++done:
++	if (release_buffer)
++		regmap_write(pmic_typec_pdphy->regmap,
++			     pmic_typec_pdphy->base + USB_PDPHY_RX_ACKNOWLEDGE_REG,
++			     0);
++	mutex_unlock(&pmic_typec_pdphy->lock);
++
++	if (!ret) {
++		dev_vdbg(dev, "pd_receive: handing %d bytes to tcpm\n", size);
++		tcpm_pd_receive(tcpm_port, &msg, TCPC_TX_SOP);
++	}
++}
++
++static irqreturn_t qcom_pmic_typec_pdphy_isr(int irq, void *dev_id)
++{
++	struct pmic_typec_pdphy_irq_data *irq_data = dev_id;
++	struct pmic_typec_pdphy *pmic_typec_pdphy = irq_data->pmic_typec_pdphy;
++	struct device *dev = pmic_typec_pdphy->dev;
++	struct tcpm_port *tcpm_port = NULL;
++	enum tcpm_transmit_type tx_type = TCPC_TX_SOP;
++	enum tcpm_transmit_status tx_status = TCPC_TX_SUCCESS;
++	bool complete_tx;
++	int cleanup_error = 0;
++	int ret;
++
++	if (!READ_ONCE(pmic_typec_pdphy->started))
++		return IRQ_HANDLED;
++
++	switch (irq_data->virq) {
++	case PMIC_PDPHY_SIG_TX_IRQ:
++		mutex_lock(&pmic_typec_pdphy->lock);
++		complete_tx = qcom_pmic_typec_pdphy_take_tx_locked(
++				pmic_typec_pdphy, true, &tcpm_port, &tx_type);
++		if (!complete_tx) {
++			mutex_unlock(&pmic_typec_pdphy->lock);
++			dev_dbg(dev, "ignoring stale PD signal TX interrupt\n");
++			break;
++		}
++		ret = qcom_pmic_typec_pdphy_clear_tx_control_reg(pmic_typec_pdphy);
++		if (ret)
++			cleanup_error = ret;
++		if (tx_type == TCPC_TX_BIST_MODE_2)
++			ret = regmap_write(pmic_typec_pdphy->regmap,
++					   pmic_typec_pdphy->base + USB_PDPHY_BIST_MODE_REG,
++					   0);
++		else if (tx_type == TCPC_TX_HARD_RESET)
++			ret = regmap_write(pmic_typec_pdphy->regmap,
++					   pmic_typec_pdphy->base + USB_PDPHY_FRAME_FILTER_REG,
++					   0);
++		else
++			ret = 0;
++		if (ret && !cleanup_error)
++			cleanup_error = ret;
++		mutex_unlock(&pmic_typec_pdphy->lock);
++		if (cleanup_error) {
++			dev_err(dev, "failed to clean up transmitted PD signal: %d\n",
++				cleanup_error);
++			tx_status = TCPC_TX_FAILED;
++		}
++		if (tcpm_port)
++			tcpm_pd_transmit_complete(tcpm_port, tx_status);
++		break;
++	case PMIC_PDPHY_SIG_RX_IRQ:
++		schedule_work(&pmic_typec_pdphy->reset_work);
++		break;
++	case PMIC_PDPHY_MSG_TX_IRQ:
++		mutex_lock(&pmic_typec_pdphy->lock);
++		complete_tx = qcom_pmic_typec_pdphy_take_tx_locked(
++				pmic_typec_pdphy, false, &tcpm_port, NULL);
++		mutex_unlock(&pmic_typec_pdphy->lock);
++		if (complete_tx && tcpm_port)
++			tcpm_pd_transmit_complete(tcpm_port, TCPC_TX_SUCCESS);
++		else if (!complete_tx)
++			dev_dbg(dev, "ignoring stale PD message TX interrupt\n");
++		break;
++	case PMIC_PDPHY_MSG_RX_IRQ:
++		tcpm_port = READ_ONCE(pmic_typec_pdphy->tcpm_port);
++		if (!tcpm_port)
++			break;
++		qcom_pmic_typec_pdphy_pd_receive(pmic_typec_pdphy, tcpm_port);
++		break;
++	case PMIC_PDPHY_MSG_TX_FAIL_IRQ:
++		mutex_lock(&pmic_typec_pdphy->lock);
++		complete_tx = qcom_pmic_typec_pdphy_take_tx_locked(
++				pmic_typec_pdphy, false, &tcpm_port, NULL);
++		mutex_unlock(&pmic_typec_pdphy->lock);
++		if (complete_tx && tcpm_port)
++			tcpm_pd_transmit_complete(tcpm_port, TCPC_TX_FAILED);
++		else if (!complete_tx)
++			dev_dbg(dev, "ignoring stale PD message failure interrupt\n");
++		break;
++	case PMIC_PDPHY_MSG_TX_DISCARD_IRQ:
++		mutex_lock(&pmic_typec_pdphy->lock);
++		complete_tx = qcom_pmic_typec_pdphy_take_tx_locked(
++				pmic_typec_pdphy, false, &tcpm_port, NULL);
++		mutex_unlock(&pmic_typec_pdphy->lock);
++		if (complete_tx && tcpm_port)
++			tcpm_pd_transmit_complete(tcpm_port, TCPC_TX_DISCARDED);
++		else if (!complete_tx)
++			dev_dbg(dev, "ignoring stale PD message discard interrupt\n");
++		break;
++	case PMIC_PDPHY_MSG_RX_DISCARD_IRQ:
++		dev_dbg(dev, "discarded incoming PD message\n");
++		break;
++	}
++
++	return IRQ_HANDLED;
++}
++
++static int qcom_pmic_typec_pdphy_set_pd_rx(struct tcpc_dev *tcpc, bool on)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct pmic_typec_pdphy *pmic_typec_pdphy = tcpm->pmic_typec_pdphy;
++	struct tcpm_port *tcpm_port = NULL;
++	bool tx_aborted = false;
++	int first_error = 0;
++	int ret;
++
++	mutex_lock(&pmic_typec_pdphy->lock);
++	if (!pmic_typec_pdphy->started) {
++		ret = -ESHUTDOWN;
++		goto unlock;
++	}
++
++	if (on) {
++		ret = regmap_write(pmic_typec_pdphy->regmap,
++				   pmic_typec_pdphy->base +
++				   USB_PDPHY_RX_ACKNOWLEDGE_REG, 0);
++		if (ret)
++			first_error = ret;
++		ret = qcom_pmic_typec_pdphy_reset_off(pmic_typec_pdphy);
++		if (ret && !first_error)
++			first_error = ret;
++	} else {
++		first_error = qcom_pmic_typec_pdphy_reset_on(pmic_typec_pdphy);
++		tx_aborted = qcom_pmic_typec_pdphy_abort_tx_locked(
++				pmic_typec_pdphy, &tcpm_port);
++		ret = regmap_write(pmic_typec_pdphy->regmap,
++				   pmic_typec_pdphy->base +
++				   USB_PDPHY_RX_ACKNOWLEDGE_REG, 1);
++		if (ret && !first_error)
++			first_error = ret;
++	}
++	ret = first_error;
++
++unlock:
++	mutex_unlock(&pmic_typec_pdphy->lock);
++	if (tx_aborted && tcpm_port)
++		tcpm_pd_transmit_complete(tcpm_port, TCPC_TX_DISCARDED);
++
++	dev_dbg(pmic_typec_pdphy->dev, "set_pd_rx: %s\n", str_on_off(on));
++
++	return ret;
++}
++
++static int qcom_pmic_typec_pdphy_set_roles(struct tcpc_dev *tcpc, bool attached,
++					   enum typec_role power_role,
++					   enum typec_data_role data_role)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct pmic_typec_pdphy *pmic_typec_pdphy = tcpm->pmic_typec_pdphy;
++	struct device *dev = pmic_typec_pdphy->dev;
++	int ret;
++
++	mutex_lock(&pmic_typec_pdphy->lock);
++	if (!pmic_typec_pdphy->started) {
++		ret = -ESHUTDOWN;
++		goto unlock;
++	}
++
++	ret = regmap_update_bits(pmic_typec_pdphy->regmap,
++				 pmic_typec_pdphy->base + USB_PDPHY_MSG_CONFIG_REG,
++				 MSG_CONFIG_PORT_DATA_ROLE |
++				 MSG_CONFIG_PORT_POWER_ROLE,
++				 (data_role == TYPEC_HOST ? MSG_CONFIG_PORT_DATA_ROLE : 0) |
++				 (power_role == TYPEC_SOURCE ? MSG_CONFIG_PORT_POWER_ROLE : 0));
++
++unlock:
++	mutex_unlock(&pmic_typec_pdphy->lock);
++
++	dev_dbg(dev, "pdphy_set_roles: data_role_host=%d power_role_src=%d\n",
++		data_role, power_role);
++
++	return ret;
++}
++
++static int qcom_pmic_typec_pdphy_enable(struct pmic_typec_pdphy *pmic_typec_pdphy)
++{
++	struct device *dev = pmic_typec_pdphy->dev;
++	int ret;
++
++	/* PD 2.0, DR=TYPEC_DEVICE, PR=TYPEC_SINK */
++	ret = regmap_update_bits(pmic_typec_pdphy->regmap,
++				 pmic_typec_pdphy->base + USB_PDPHY_MSG_CONFIG_REG,
++				 MSG_CONFIG_SPEC_REV_MASK, PD_REV20);
++	if (ret)
++		goto done;
++
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++			   pmic_typec_pdphy->base + USB_PDPHY_EN_CONTROL_REG, 0);
++	if (ret)
++		goto done;
++
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++			   pmic_typec_pdphy->base + USB_PDPHY_EN_CONTROL_REG,
++			   CONTROL_ENABLE);
++	if (ret)
++		goto done;
++
++	ret = qcom_pmic_typec_pdphy_reset_off(pmic_typec_pdphy);
++done:
++	if (ret)
++		dev_err(dev, "pdphy_enable fail %d\n", ret);
++
++	return ret;
++}
++
++static int qcom_pmic_typec_pdphy_disable(struct pmic_typec_pdphy *pmic_typec_pdphy)
++{
++	int first_error;
++	int ret;
++
++	first_error = qcom_pmic_typec_pdphy_reset_on(pmic_typec_pdphy);
++	qcom_pmic_typec_pdphy_abort_tx_locked(pmic_typec_pdphy, NULL);
++
++	ret = regmap_write(pmic_typec_pdphy->regmap,
++			   pmic_typec_pdphy->base + USB_PDPHY_EN_CONTROL_REG, 0);
++	if (ret && !first_error)
++		first_error = ret;
++
++	return first_error;
++}
++
++static int pmic_typec_pdphy_reset(struct pmic_typec_pdphy *pmic_typec_pdphy)
++{
++	int ret;
++
++	ret = qcom_pmic_typec_pdphy_disable(pmic_typec_pdphy);
++	if (ret)
++		goto done;
++
++	usleep_range(400, 500);
++	ret = qcom_pmic_typec_pdphy_enable(pmic_typec_pdphy);
++done:
++	return ret;
++}
++
++static int qcom_pmic_typec_pdphy_power_on(struct pmic_typec_pdphy *pdphy)
++{
++	int ret;
++
++	ret = regulator_set_load(pdphy->vdd_pdphy, VDD_PDPHY_HPM_LOAD);
++	if (ret < 0)
++		return ret;
++
++	ret = regulator_set_voltage(pdphy->vdd_pdphy, VDD_PDPHY_VOL_MIN,
++				    VDD_PDPHY_VOL_MAX);
++	if (ret)
++		goto clear_load;
++
++	ret = regulator_enable(pdphy->vdd_pdphy);
++	if (ret)
++		goto clear_voltage;
++
++	return 0;
++
++clear_voltage:
++	regulator_set_voltage(pdphy->vdd_pdphy, 0, VDD_PDPHY_VOL_MAX);
++clear_load:
++	regulator_set_load(pdphy->vdd_pdphy, 0);
++	return ret;
++}
++
++static void qcom_pmic_typec_pdphy_power_off(struct pmic_typec_pdphy *pdphy)
++{
++	int ret;
++
++	ret = regulator_disable(pdphy->vdd_pdphy);
++	if (ret)
++		dev_err(pdphy->dev, "failed to disable PD PHY supply: %d\n", ret);
++
++	ret = regulator_set_voltage(pdphy->vdd_pdphy, 0, VDD_PDPHY_VOL_MAX);
++	if (ret)
++		dev_err(pdphy->dev, "failed to release PD PHY voltage: %d\n", ret);
++
++	ret = regulator_set_load(pdphy->vdd_pdphy, 0);
++	if (ret < 0)
++		dev_err(pdphy->dev, "failed to release PD PHY load: %d\n", ret);
++}
++
++static int qcom_pmic_typec_pdphy_start(struct pmic_typec *tcpm,
++					       struct tcpm_port *tcpm_port)
++{
++	struct pmic_typec_pdphy *pmic_typec_pdphy = tcpm->pmic_typec_pdphy;
++	bool enable_irqs = false;
++	int i;
++	int ret;
++
++	mutex_lock(&pmic_typec_pdphy->lock);
++	if (pmic_typec_pdphy->started) {
++		WRITE_ONCE(pmic_typec_pdphy->tcpm_port, tcpm_port);
++		if (tcpm_port && !pmic_typec_pdphy->irqs_enabled) {
++			pmic_typec_pdphy->irqs_enabled = true;
++			enable_irqs = true;
++		}
++		mutex_unlock(&pmic_typec_pdphy->lock);
++		goto enable;
++	}
++	mutex_unlock(&pmic_typec_pdphy->lock);
++
++	ret = qcom_pmic_typec_pdphy_power_on(pmic_typec_pdphy);
++	if (ret)
++		return ret;
++
++	mutex_lock(&pmic_typec_pdphy->lock);
++	WRITE_ONCE(pmic_typec_pdphy->tcpm_port, tcpm_port);
++
++	ret = pmic_typec_pdphy_reset(pmic_typec_pdphy);
++	if (ret) {
++		WRITE_ONCE(pmic_typec_pdphy->tcpm_port, NULL);
++		mutex_unlock(&pmic_typec_pdphy->lock);
++		goto err_disable_vdd_pdphy;
++	}
++	WRITE_ONCE(pmic_typec_pdphy->started, true);
++	if (tcpm_port) {
++		pmic_typec_pdphy->irqs_enabled = true;
++		enable_irqs = true;
++	}
++	mutex_unlock(&pmic_typec_pdphy->lock);
++
++enable:
++	if (enable_irqs) {
++		for (i = 0; i < pmic_typec_pdphy->nr_irqs; i++)
++			enable_irq(pmic_typec_pdphy->irq_data[i].irq);
++	}
++
++	return 0;
++
++err_disable_vdd_pdphy:
++	qcom_pmic_typec_pdphy_power_off(pmic_typec_pdphy);
++
++	return ret;
++}
++
++static void qcom_pmic_typec_pdphy_quiesce(struct pmic_typec *tcpm)
++{
++	struct pmic_typec_pdphy *pmic_typec_pdphy = tcpm->pmic_typec_pdphy;
++	bool disable_irqs = false;
++	int i;
++
++	mutex_lock(&pmic_typec_pdphy->lock);
++	WRITE_ONCE(pmic_typec_pdphy->tcpm_port, NULL);
++	qcom_pmic_typec_pdphy_abort_tx_locked(pmic_typec_pdphy, NULL);
++	if (pmic_typec_pdphy->irqs_enabled) {
++		pmic_typec_pdphy->irqs_enabled = false;
++		disable_irqs = true;
++	}
++	mutex_unlock(&pmic_typec_pdphy->lock);
++
++	if (disable_irqs) {
++		for (i = 0; i < pmic_typec_pdphy->nr_irqs; i++)
++			disable_irq(pmic_typec_pdphy->irq_data[i].irq);
++	}
++	cancel_work_sync(&pmic_typec_pdphy->reset_work);
++}
++
++static void qcom_pmic_typec_pdphy_stop(struct pmic_typec *tcpm)
++{
++	struct pmic_typec_pdphy *pmic_typec_pdphy = tcpm->pmic_typec_pdphy;
++	bool started;
++
++	qcom_pmic_typec_pdphy_quiesce(tcpm);
++
++	mutex_lock(&pmic_typec_pdphy->lock);
++	started = pmic_typec_pdphy->started;
++	WRITE_ONCE(pmic_typec_pdphy->started, false);
++	if (!started) {
++		mutex_unlock(&pmic_typec_pdphy->lock);
++		return;
++	}
++	if (qcom_pmic_typec_pdphy_disable(pmic_typec_pdphy))
++		dev_err(pmic_typec_pdphy->dev, "failed to disable PD PHY\n");
++	mutex_unlock(&pmic_typec_pdphy->lock);
++
++	qcom_pmic_typec_pdphy_power_off(pmic_typec_pdphy);
++}
++
++int qcom_pmic_typec_pdphy_probe(struct platform_device *pdev,
++				struct pmic_typec *tcpm,
++				const struct pmic_typec_pdphy_resources *res,
++				struct regmap *regmap,
++				u32 base)
++{
++	struct pmic_typec_pdphy *pmic_typec_pdphy;
++	struct device *dev = &pdev->dev;
++	struct pmic_typec_pdphy_irq_data *irq_data;
++	int i, ret, irq;
++
++	if (base != 0x1700)
++		return dev_err_probe(dev, -EINVAL,
++				     "unsupported PD PHY base %#x\n", base);
++
++	pmic_typec_pdphy = devm_kzalloc(dev, sizeof(*pmic_typec_pdphy), GFP_KERNEL);
++	if (!pmic_typec_pdphy)
++		return -ENOMEM;
++
++	if (!res->nr_irqs || res->nr_irqs > PMIC_PDPHY_MAX_IRQS)
++		return -EINVAL;
++
++	irq_data = devm_kcalloc(dev, res->nr_irqs, sizeof(*irq_data),
++				GFP_KERNEL);
++	if (!irq_data)
++		return -ENOMEM;
++
++	pmic_typec_pdphy->vdd_pdphy = devm_regulator_get(dev, "vdd-pdphy");
++	if (IS_ERR(pmic_typec_pdphy->vdd_pdphy))
++		return PTR_ERR(pmic_typec_pdphy->vdd_pdphy);
++
++	pmic_typec_pdphy->dev = dev;
++	pmic_typec_pdphy->base = base;
++	pmic_typec_pdphy->regmap = regmap;
++	pmic_typec_pdphy->nr_irqs = res->nr_irqs;
++	pmic_typec_pdphy->irq_data = irq_data;
++	mutex_init(&pmic_typec_pdphy->lock);
++	INIT_WORK(&pmic_typec_pdphy->reset_work, qcom_pmic_typec_pdphy_sig_reset_work);
++
++	/* SMB2-generation PHYs require this secure trim before first use. */
++	ret = regmap_write(regmap, base + USB_PDPHY_SEC_ACCESS_REG,
++			   USB_PDPHY_SEC_ACCESS_VALUE);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to unlock PD PHY trim\n");
++
++	ret = regmap_write(regmap, base + USB_PDPHY_TRIM_3_REG,
++			   USB_PDPHY_TRIM_3_VALUE);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to program PD PHY trim\n");
++
++	for (i = 0; i < res->nr_irqs; i++, irq_data++) {
++		irq = platform_get_irq_byname(pdev, res->irq_params[i].irq_name);
++		if (irq < 0)
++			return irq;
++
++		irq_data->pmic_typec_pdphy = pmic_typec_pdphy;
++		irq_data->irq = irq;
++		irq_data->virq = res->irq_params[i].virq;
++
++		ret = devm_request_threaded_irq(dev, irq, NULL,
++						qcom_pmic_typec_pdphy_isr,
++						IRQF_ONESHOT | IRQF_NO_AUTOEN,
++						res->irq_params[i].irq_name,
++						irq_data);
++		if (ret)
++			return ret;
++	}
++
++	tcpm->pmic_typec_pdphy = pmic_typec_pdphy;
++
++	tcpm->tcpc.set_pd_rx = qcom_pmic_typec_pdphy_set_pd_rx;
++	tcpm->tcpc.set_roles = qcom_pmic_typec_pdphy_set_roles;
++	tcpm->tcpc.pd_transmit = qcom_pmic_typec_pdphy_pd_transmit;
++
++	tcpm->pdphy_start = qcom_pmic_typec_pdphy_start;
++	tcpm->pdphy_quiesce = qcom_pmic_typec_pdphy_quiesce;
++	tcpm->pdphy_stop = qcom_pmic_typec_pdphy_stop;
++
++	return 0;
++}
++
++const struct pmic_typec_pdphy_resources smb2_pdphy_res = {
++	.irq_params = {
++		{
++			.virq = PMIC_PDPHY_SIG_TX_IRQ,
++			.irq_name = "sig-tx",
++		},
++		{
++			.virq = PMIC_PDPHY_SIG_RX_IRQ,
++			.irq_name = "sig-rx",
++		},
++		{
++			.virq = PMIC_PDPHY_MSG_TX_IRQ,
++			.irq_name = "msg-tx",
++		},
++		{
++			.virq = PMIC_PDPHY_MSG_RX_IRQ,
++			.irq_name = "msg-rx",
++		},
++		{
++			.virq = PMIC_PDPHY_MSG_TX_FAIL_IRQ,
++			.irq_name = "msg-tx-failed",
++		},
++		{
++			.virq = PMIC_PDPHY_MSG_TX_DISCARD_IRQ,
++			.irq_name = "msg-tx-discarded",
++		},
++		{
++			.virq = PMIC_PDPHY_MSG_RX_DISCARD_IRQ,
++			.irq_name = "msg-rx-discarded",
++		},
++	},
++	.nr_irqs = 7,
++};
+diff --git a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_pdphy.h b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_pdphy.h
+--- /dev/null
++++ b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_pdphy.h
+@@ -0,0 +1,37 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
++ * Copyright (c) 2023, Linaro Ltd. All rights reserved.
++ */
++#ifndef __QCOM_PMIC_PDPHY_H__
++#define __QCOM_PMIC_PDPHY_H__
++
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++
++/* Resources */
++#define PMIC_PDPHY_MAX_IRQS		0x08
++
++struct pmic_typec_pdphy_irq_params {
++	int				virq;
++	const char			*irq_name;
++};
++
++struct pmic_typec_pdphy_resources {
++	unsigned int				nr_irqs;
++	const struct pmic_typec_pdphy_irq_params	irq_params[PMIC_PDPHY_MAX_IRQS];
++};
++
++/* API */
++struct pmic_typec_pdphy;
++
++extern const struct pmic_typec_pdphy_resources smb2_pdphy_res;
++int qcom_pmic_typec_pdphy_probe(struct platform_device *pdev,
++				struct pmic_typec *tcpm,
++				const struct pmic_typec_pdphy_resources *res,
++				struct regmap *regmap,
++				u32 base);
++int qcom_pmic_typec_pdphy_stub_probe(struct platform_device *pdev,
++				     struct pmic_typec *tcpm);
++
++#endif /* __QCOM_PMIC_TYPEC_PDPHY_H__ */
+diff --git a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_pdphy_stub.c b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_pdphy_stub.c
+--- /dev/null
++++ b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_pdphy_stub.c
+@@ -0,0 +1,81 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2024, Linaro Ltd. All rights reserved.
++ */
++
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/kernel.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <linux/slab.h>
++#include <linux/string_choices.h>
++#include <linux/usb/pd.h>
++#include <linux/usb/tcpm.h>
++#include "qcom_pmic_typec.h"
++#include "qcom_pmic_typec_pdphy.h"
++
++static int qcom_pmic_typec_pdphy_stub_pd_transmit(struct tcpc_dev *tcpc,
++						  enum tcpm_transmit_type type,
++						  const struct pd_message *msg,
++						  unsigned int negotiated_rev)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct device *dev = tcpm->dev;
++
++	dev_warn_ratelimited(dev,
++			     "rejecting PD transmit type %d while PD is disabled\n",
++			     type);
++
++	return -EOPNOTSUPP;
++}
++
++static int qcom_pmic_typec_pdphy_stub_set_pd_rx(struct tcpc_dev *tcpc, bool on)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct device *dev = tcpm->dev;
++
++	dev_dbg(dev, "set_pd_rx: %s\n", str_on_off(on));
++
++	return 0;
++}
++
++static int qcom_pmic_typec_pdphy_stub_set_roles(struct tcpc_dev *tcpc, bool attached,
++						enum typec_role power_role,
++						enum typec_data_role data_role)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct device *dev = tcpm->dev;
++
++	dev_dbg(dev, "pdphy_set_roles: data_role_host=%d power_role_src=%d\n",
++		data_role, power_role);
++
++	return 0;
++}
++
++static int qcom_pmic_typec_pdphy_stub_start(struct pmic_typec *tcpm,
++					    struct tcpm_port *tcpm_port)
++{
++	return 0;
++}
++
++static void qcom_pmic_typec_pdphy_stub_stop(struct pmic_typec *tcpm)
++{
++}
++
++int qcom_pmic_typec_pdphy_stub_probe(struct platform_device *pdev,
++				     struct pmic_typec *tcpm)
++{
++	tcpm->tcpc.set_pd_rx = qcom_pmic_typec_pdphy_stub_set_pd_rx;
++	tcpm->tcpc.set_roles = qcom_pmic_typec_pdphy_stub_set_roles;
++	tcpm->tcpc.pd_transmit = qcom_pmic_typec_pdphy_stub_pd_transmit;
++
++	tcpm->pdphy_start = qcom_pmic_typec_pdphy_stub_start;
++	tcpm->pdphy_quiesce = qcom_pmic_typec_pdphy_stub_stop;
++	tcpm->pdphy_stop = qcom_pmic_typec_pdphy_stub_stop;
++
++	return 0;
++}
+diff --git a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c
+--- /dev/null
++++ b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_main.c
+@@ -0,0 +1,425 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Standalone Qualcomm SMB2-generation PMIC USB Type-C driver.
++ *
++ * Copyright (c) 2023, Linaro Ltd. All rights reserved.
++ * Copyright (c) 2026, Sam Day
++ */
++
++#include <linux/err.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/power_supply.h>
++#include <linux/property.h>
++#include <linux/regmap.h>
++#include <linux/slab.h>
++#include <linux/usb/pd.h>
++#include <linux/usb/tcpm.h>
++#include <soc/qcom/qcom-spmi-pmic.h>
++
++#include "qcom_pmic_typec.h"
++#include "qcom_pmic_typec_pdphy.h"
++#include "qcom_pmic_typec_smb2_port.h"
++
++struct smb2_typec_resources {
++	const struct pmic_typec_pdphy_resources *pdphy_res;
++	const struct pmic_typec_port_resources *port_res;
++	const char *charger_compatible;
++	unsigned int pmic_subtype;
++};
++
++#define SMB2_MAX_SINK_CURRENT_MA		3000
++#define SMB2_MAX_SOURCE_CURRENT_MA	1500
++
++static int smb2_validate_pdo_property(struct device *dev,
++				      struct fwnode_handle *fwnode,
++				      const char *property,
++				      unsigned int max_current_ma)
++{
++	u32 pdos[PDO_MAX_OBJECTS];
++	int count;
++	int ret;
++	int i;
++
++	if (!fwnode_property_present(fwnode, property))
++		return 0;
++
++	count = fwnode_property_count_u32(fwnode, property);
++	if (count < 1 || count > PDO_MAX_OBJECTS)
++		return dev_err_probe(dev, -EINVAL,
++				     "%s must contain 1..%d PDOs\n",
++				     property, PDO_MAX_OBJECTS);
++
++	ret = fwnode_property_read_u32_array(fwnode, property, pdos, count);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to read %s\n", property);
++
++	for (i = 0; i < count; i++) {
++		unsigned int current_ma;
++		unsigned int voltage_mv;
++
++		if (pdo_type(pdos[i]) != PDO_TYPE_FIXED)
++			return dev_err_probe(dev, -EOPNOTSUPP,
++					     "%s[%d] is not a fixed PDO\n",
++					     property, i);
++
++		voltage_mv = pdo_fixed_voltage(pdos[i]);
++		/* Fixed and variable PDOs use the same 10 mA current field. */
++		current_ma = pdo_max_current(pdos[i]);
++		if (voltage_mv != VSAFE5V)
++			return dev_err_probe(dev, -EOPNOTSUPP,
++					     "%s[%d] advertises %umV; only 5V is supported\n",
++					     property, i, voltage_mv);
++		if (!current_ma || current_ma > max_current_ma)
++			return dev_err_probe(dev, -ERANGE,
++					     "%s[%d] advertises unsupported %umA\n",
++					     property, i, current_ma);
++	}
++
++	return 0;
++}
++
++static int smb2_validate_pd_caps_node(struct device *dev,
++				      struct fwnode_handle *fwnode)
++{
++	int ret;
++
++	ret = smb2_validate_pdo_property(dev, fwnode, "source-pdos",
++					 SMB2_MAX_SOURCE_CURRENT_MA);
++	if (ret)
++		return ret;
++
++	return smb2_validate_pdo_property(dev, fwnode, "sink-pdos",
++					  SMB2_MAX_SINK_CURRENT_MA);
++}
++
++static int smb2_validate_pd_caps(struct device *dev,
++					 struct fwnode_handle *connector)
++{
++	struct fwnode_handle *capabilities;
++	struct fwnode_handle *caps = NULL;
++	u8 revision[4];
++	int count;
++	int ret = 0;
++
++	count = fwnode_property_count_u8(connector, "pd-revision");
++	if (count != (int)ARRAY_SIZE(revision))
++		return dev_err_probe(dev, -EINVAL,
++				     "PD requires a four-byte pd-revision property\n");
++
++	ret = fwnode_property_read_u8_array(connector, "pd-revision",
++					    revision, ARRAY_SIZE(revision));
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to read pd-revision\n");
++	if (revision[0] != 2 || revision[1] != 0)
++		return dev_err_probe(dev, -EOPNOTSUPP,
++				     "only USB PD revision 2.0 is supported\n");
++
++	capabilities = fwnode_get_named_child_node(connector, "capabilities");
++	if (!capabilities)
++		return smb2_validate_pd_caps_node(dev, connector);
++
++	while ((caps = fwnode_get_next_child_node(capabilities, caps))) {
++		ret = smb2_validate_pd_caps_node(dev, caps);
++		if (ret) {
++			fwnode_handle_put(caps);
++			break;
++		}
++	}
++
++	fwnode_handle_put(capabilities);
++	return ret;
++}
++
++static int smb2_typec_set_current_limit(struct tcpc_dev *tcpc, u32 max_ma,
++					u32 mv)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	union power_supply_propval value;
++	int ret;
++
++	/* TCPM clears the limit with (0, 0) during disconnect. */
++	if (!max_ma && mv)
++		return -EINVAL;
++	if (max_ma && mv != VSAFE5V) {
++		dev_err(tcpm->dev, "refusing unsupported %umV contract\n", mv);
++		return -EOPNOTSUPP;
++	}
++	if (max_ma > SMB2_MAX_SINK_CURRENT_MA) {
++		dev_err(tcpm->dev, "refusing unsupported %umA contract\n", max_ma);
++		return -ERANGE;
++	}
++
++	value.intval = max_ma * 1000;
++	ret = power_supply_set_property(tcpm->charger,
++						POWER_SUPPLY_PROP_CURRENT_MAX, &value);
++	if (ret) {
++		dev_err(tcpm->dev, "failed to set charger limit to %umA: %d\n",
++			max_ma, ret);
++		return ret;
++	}
++
++	dev_dbg(tcpm->dev, "charger limit set to %umA at %umV\n", max_ma, mv);
++	return 0;
++}
++
++static int smb2_typec_init(struct tcpc_dev *tcpc)
++{
++	return 0;
++}
++
++static int smb2_typec_probe(struct platform_device *pdev)
++{
++	const struct smb2_typec_resources *res;
++	const struct qcom_spmi_pmic *pmic;
++	struct device *dev = &pdev->dev;
++	struct device_link *charger_link;
++	struct pmic_typec *tcpm;
++	struct tcpm_port *tcpm_port;
++	struct regmap *regmap;
++	bool pd_disabled;
++	u32 base;
++	int ret;
++
++	res = device_get_match_data(dev);
++	if (!res)
++		return -ENODEV;
++
++	tcpm = devm_kzalloc(dev, sizeof(*tcpm), GFP_KERNEL);
++	if (!tcpm)
++		return -ENOMEM;
++
++	tcpm->dev = dev;
++	tcpm->tcpc.init = smb2_typec_init;
++	tcpm->tcpc.set_current_limit = smb2_typec_set_current_limit;
++	tcpm->tcpc.fwnode = device_get_named_child_node(dev, "connector");
++	if (!tcpm->tcpc.fwnode)
++		return dev_err_probe(dev, -EINVAL, "missing connector node\n");
++
++	pd_disabled = fwnode_property_read_bool(tcpm->tcpc.fwnode,
++						"pd-disable");
++	tcpm->pd_disabled = pd_disabled;
++
++	/* Initial polaris hardware test is strictly no-PD. */
++	if (!pd_disabled) {
++		ret = dev_err_probe(dev, -EOPNOTSUPP,
++				    "polaris test04 requires pd-disable\n");
++		goto put_fwnode;
++	}
++
++	pmic = qcom_pmic_get(dev);
++	if (IS_ERR(pmic)) {
++		ret = dev_err_probe(dev, PTR_ERR(pmic),
++				    "failed to read PMIC revision\n");
++		goto put_fwnode;
++	}
++	if (!pmic || pmic->subtype != res->pmic_subtype) {
++		ret = dev_err_probe(dev, -ENODEV,
++				    "compatible does not match PMIC subtype\n");
++		goto put_fwnode;
++	}
++
++	tcpm->pbs_wa = true;
++	tcpm->cc2_detach_wa = pmic->subtype == PMI8998_SUBTYPE &&
++				 pmic->major == 2;
++
++	if (!pd_disabled) {
++		ret = smb2_validate_pd_caps(dev, tcpm->tcpc.fwnode);
++		if (ret)
++			goto put_fwnode;
++	}
++
++	/*
++	 * qcom_smbx registers this power supply only after its one-time
++	 * hardware initialization. Requiring the reference therefore orders
++	 * all of our Type-C register programming after the charger writes.
++	 */
++	tcpm->charger = devm_power_supply_get_by_reference(dev,
++							   "charger-power-supply");
++	if (IS_ERR(tcpm->charger)) {
++		ret = dev_err_probe(dev, PTR_ERR(tcpm->charger),
++				    "invalid charger-power-supply\n");
++		goto put_fwnode;
++	}
++	if (!tcpm->charger) {
++		ret = dev_err_probe(dev, -EPROBE_DEFER,
++				    "waiting for charger power supply\n");
++		goto put_fwnode;
++	}
++	if (!tcpm->charger->dev.parent) {
++		ret = dev_err_probe(dev, -ENODEV,
++				    "charger has no supplier device\n");
++		goto put_fwnode;
++	}
++	if (!device_is_compatible(tcpm->charger->dev.parent,
++				  res->charger_compatible)) {
++		ret = dev_err_probe(dev, -EINVAL,
++				    "charger-power-supply is not the matching qcom_smbx device\n");
++		goto put_fwnode;
++	}
++
++	charger_link = device_link_add(dev, tcpm->charger->dev.parent,
++				       DL_FLAG_AUTOREMOVE_CONSUMER);
++	if (!charger_link) {
++		ret = dev_err_probe(dev, -EINVAL,
++				    "failed to link charger supplier\n");
++		goto put_fwnode;
++	}
++
++	regmap = dev_get_regmap(dev->parent, NULL);
++	if (!regmap) {
++		ret = dev_err_probe(dev, -ENODEV, "failed to get parent regmap\n");
++		goto put_fwnode;
++	}
++
++	ret = of_property_read_u32_index(dev->of_node, "reg", 0, &base);
++	if (ret)
++		goto put_fwnode;
++
++	ret = qcom_pmic_typec_port_probe(pdev, tcpm, res->port_res,
++					 regmap, base);
++	if (ret)
++		goto put_fwnode;
++
++	if (!pd_disabled) {
++		ret = of_property_read_u32_index(dev->of_node, "reg", 1, &base);
++		if (ret) {
++			ret = dev_err_probe(dev, ret,
++					    "PD enabled without a PD PHY resource\n");
++			goto put_fwnode;
++		}
++
++		ret = qcom_pmic_typec_pdphy_probe(pdev, tcpm,
++						  res->pdphy_res, regmap, base);
++	} else {
++		ret = qcom_pmic_typec_pdphy_stub_probe(pdev, tcpm);
++	}
++	if (ret)
++		goto put_fwnode;
++
++	platform_set_drvdata(pdev, tcpm);
++
++	/*
++	 * TCPM synchronously invokes the tcpc callbacks while registering the
++	 * port. Prepare both hardware blocks first, but leave their IRQ callback
++	 * targets unbound until tcpm_register_port() returns a valid port.
++	 */
++	ret = tcpm->pdphy_start(tcpm, NULL);
++	if (ret)
++		goto put_fwnode;
++
++	ret = tcpm->port_start(tcpm, NULL);
++	if (ret)
++		goto stop_pdphy;
++
++	tcpm_port = tcpm_register_port(dev, &tcpm->tcpc);
++	if (IS_ERR(tcpm_port)) {
++		ret = PTR_ERR(tcpm_port);
++		goto stop_port;
++	}
++	tcpm->tcpm_port = tcpm_port;
++
++	/* Bind callback targets and only then enable the hardware IRQs. */
++	ret = tcpm->pdphy_start(tcpm, tcpm_port);
++	if (ret)
++		goto quiesce_unregister;
++
++	ret = tcpm->port_start(tcpm, tcpm_port);
++	if (ret)
++		goto quiesce_unregister;
++
++	/* Reconcile any edge that arrived while IRQs were deliberately masked. */
++	tcpm_vbus_change(tcpm_port);
++	tcpm_cc_change(tcpm_port);
++
++	dev_info(dev, "registered SMB2 Type-C port (%s)\n",
++			 pd_disabled ? "PD disabled" : "PD enabled");
++	return 0;
++
++quiesce_unregister:
++	tcpm->port_quiesce(tcpm);
++	tcpm->pdphy_quiesce(tcpm);
++	tcpm->tcpm_port = NULL;
++	tcpm_unregister_port(tcpm_port);
++stop_port:
++	tcpm->port_stop(tcpm);
++stop_pdphy:
++	tcpm->pdphy_stop(tcpm);
++put_fwnode:
++	fwnode_handle_put(tcpm->tcpc.fwnode);
++	return ret;
++}
++
++static void smb2_typec_teardown(struct platform_device *pdev)
++{
++	struct pmic_typec *tcpm = platform_get_drvdata(pdev);
++	struct tcpm_port *tcpm_port;
++
++	if (!tcpm)
++		return;
++
++	tcpm_port = tcpm->tcpm_port;
++	if (!tcpm_port)
++		return;
++	tcpm->tcpm_port = NULL;
++
++	/* Stop asynchronous callbacks before TCPM tears down its port object. */
++	tcpm->port_quiesce(tcpm);
++	tcpm->pdphy_quiesce(tcpm);
++	tcpm_unregister_port(tcpm_port);
++
++	/* TCPM has made its final tcpc calls; hardware can now be powered down. */
++	tcpm->port_stop(tcpm);
++	tcpm->pdphy_stop(tcpm);
++	fwnode_handle_put(tcpm->tcpc.fwnode);
++	tcpm->tcpc.fwnode = NULL;
++}
++
++static void smb2_typec_remove(struct platform_device *pdev)
++{
++	smb2_typec_teardown(pdev);
++}
++
++static void smb2_typec_shutdown(struct platform_device *pdev)
++{
++	/* Leave no VBUS, VCONN, or PD PHY state active across a warm handoff. */
++	smb2_typec_teardown(pdev);
++}
++
++static const struct smb2_typec_resources pm660_typec_res = {
++	.pdphy_res = &smb2_pdphy_res,
++	.port_res = &smb2_port_res,
++	.charger_compatible = "qcom,pm660-charger",
++	.pmic_subtype = PM660_SUBTYPE,
++};
++
++static const struct smb2_typec_resources pmi8998_typec_res = {
++	.pdphy_res = &smb2_pdphy_res,
++	.port_res = &smb2_port_res,
++	.charger_compatible = "qcom,pmi8998-charger",
++	.pmic_subtype = PMI8998_SUBTYPE,
++};
++
++static const struct of_device_id smb2_typec_of_match[] = {
++	{ .compatible = "qcom,pm660-typec", .data = &pm660_typec_res },
++	{ .compatible = "qcom,pmi8998-typec", .data = &pmi8998_typec_res },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, smb2_typec_of_match);
++
++static struct platform_driver smb2_typec_driver = {
++	.probe = smb2_typec_probe,
++	.remove = smb2_typec_remove,
++	.shutdown = smb2_typec_shutdown,
++	.driver = {
++		.name = "qcom-pmic-typec-smb2",
++		.of_match_table = smb2_typec_of_match,
++	},
++};
++module_platform_driver(smb2_typec_driver);
++
++MODULE_DESCRIPTION("Qualcomm PM660/PMI8998 SMB2 USB Type-C driver");
++MODULE_LICENSE("GPL");
++MODULE_SOFTDEP("pre: qcom_smbx");
+diff --git a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.c b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.c
+--- /dev/null
++++ b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.c
+@@ -0,0 +1,1386 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Qualcomm PM660/PMI8998 (SMB2 generation) USB Type-C port controller.
++ *
++ * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
++ * Copyright (c) 2023, Linaro Ltd. All rights reserved.
++ * Copyright (c) 2026, Sam Day
++ */
++
++#include <linux/delay.h>
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/iopoll.h>
++#include <linux/kernel.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <linux/slab.h>
++#include <linux/string_choices.h>
++#include <linux/usb/tcpm.h>
++#include <linux/workqueue.h>
++
++#include "qcom_pmic_typec.h"
++#include "qcom_pmic_typec_smb2_port.h"
++
++/* Registers relative to the Type-C peripheral at 0x1300. */
++#define SMB2_TYPE_C_STATUS_1_REG			0x0b
++#define SMB2_UFP_TYPEC_MASK			GENMASK(7, 5)
++#define SMB2_UFP_TYPEC_RDSTD_BIT			BIT(7)
++#define SMB2_UFP_TYPEC_RD1P5_BIT			BIT(6)
++#define SMB2_UFP_TYPEC_RD3P0_BIT			BIT(5)
++
++#define SMB2_TYPE_C_STATUS_2_REG			0x0c
++#define SMB2_DFP_TYPEC_MASK			GENMASK(3, 0)
++#define SMB2_DFP_RD_OPEN_BIT			BIT(3)
++#define SMB2_DFP_RD_RA_VCONN_BIT		BIT(2)
++#define SMB2_DFP_RD_RD_BIT			BIT(1)
++#define SMB2_DFP_RA_RA_BIT			BIT(0)
++
++#define SMB2_TYPE_C_STATUS_4_REG			0x0e
++#define SMB2_UFP_DFP_MODE_STATUS_BIT		BIT(7)
++#define SMB2_TYPEC_VBUS_STATUS_BIT		BIT(6)
++#define SMB2_TYPEC_VBUS_ERROR_STATUS_BIT	BIT(5)
++#define SMB2_TYPEC_DEBOUNCE_DONE_STATUS_BIT	BIT(4)
++#define SMB2_TYPEC_VCONN_OVERCURR_STATUS_BIT	BIT(2)
++#define SMB2_CC_ORIENTATION_BIT			BIT(1)
++#define SMB2_CC_ATTACHED_BIT			BIT(0)
++
++#define SMB2_TYPE_C_STATUS_5_REG			0x0f
++#define SMB2_TIMER_STAGE_2_BIT			BIT(4)
++
++#define SMB2_TYPE_C_CFG_REG			0x58
++#define SMB2_FACTORY_MODE_DETECTION_EN_BIT	BIT(5)
++#define SMB2_VCONN_OC_CFG_BIT			BIT(1)
++
++#define SMB2_TYPE_C_CFG_2_REG			0x59
++#define SMB2_DFP_CC_1P4V_OR_1P6V_BIT		BIT(6)
++#define SMB2_VCONN_SOFTSTART_CFG_MASK		GENMASK(5, 4)
++#define SMB2_EN_TRY_SOURCE_MODE_BIT		BIT(3)
++#define SMB2_TYPE_C_UFP_MODE_BIT			BIT(1)
++#define SMB2_EN_80UA_180UA_CUR_SOURCE_BIT	BIT(0)
++
++#define SMB2_TYPE_C_CFG_3_REG			0x5a
++#define SMB2_TYPEC_LEGACY_CABLE_INT_EN_BIT	BIT(6)
++#define SMB2_TYPEC_NONCOMPLIANT_LEGACY_CABLE_INT_EN_BIT BIT(5)
++#define SMB2_TYPEC_TRYSOURCE_DETECT_INT_EN_BIT	BIT(4)
++#define SMB2_TYPEC_TRYSINK_DETECT_INT_EN_BIT	BIT(3)
++#define SMB2_EN_TRYSINK_MODE_BIT			BIT(2)
++
++#define SMB2_TAPER_TIMER_SEL_CFG_REG		0x64
++#define SMB2_TYPEC_SPARE_CFG_BIT			BIT(7)
++
++#define SMB2_TYPE_C_INTRPT_ENB_REG		0x67
++#define SMB2_TYPEC_CCOUT_DETACH_INT_EN_BIT	BIT(7)
++#define SMB2_TYPEC_CCOUT_ATTACH_INT_EN_BIT	BIT(6)
++#define SMB2_TYPEC_VBUS_ERROR_INT_EN_BIT	BIT(5)
++#define SMB2_TYPEC_UFP_AUDIOADAPT_INT_EN_BIT	BIT(4)
++#define SMB2_TYPEC_DEBOUNCE_DONE_INT_EN_BIT	BIT(3)
++#define SMB2_TYPEC_CCSTATE_CHANGE_INT_EN_BIT	BIT(2)
++#define SMB2_TYPEC_VBUS_DEASSERT_INT_EN_BIT	BIT(1)
++#define SMB2_TYPEC_VBUS_ASSERT_INT_EN_BIT	BIT(0)
++
++#define SMB2_TYPE_C_SW_CTRL_REG			0x68
++#define SMB2_EXIT_SNK_BASED_ON_CC_BIT		BIT(7)
++#define SMB2_VCONN_EN_ORIENTATION_BIT		BIT(6)
++#define SMB2_TYPEC_VCONN_OC_INT_EN_BIT		BIT(5)
++#define SMB2_VCONN_EN_SRC_BIT			BIT(4)
++#define SMB2_VCONN_EN_VALUE_BIT			BIT(3)
++#define SMB2_TYPEC_POWER_ROLE_CMD_MASK		GENMASK(2, 0)
++#define SMB2_UFP_EN_CMD_BIT			BIT(2)
++#define SMB2_DFP_EN_CMD_BIT			BIT(1)
++#define SMB2_TYPEC_DISABLE_CMD_BIT		BIT(0)
++
++/* Absolute PMIC addresses used by the documented SMB2 workarounds. */
++#define SMB2_MISC_CFG_REG			0x1652
++#define SMB2_TCC_DEBOUNCE_20MS_BIT		BIT(5)
++#define SMB2_TM_IO_DTEST4_SEL_REG		0x16e9
++#define SMB2_PBS_ENABLED_VALUE			0xa5
++
++#define SMB2_CC_DEBOUNCE_MS			2
++#define SMB2_CC2_MAX_ATTEMPTS			100
++#define SMB2_CC2_SAVED_REGS			5
++#define SMB2_VCONN_MAX_ATTEMPTS			3
++#define SMB2_VCONN_OC_FALL_TRIES		10
++#define SMB2_VBUS_POLL_US			100
++#define SMB2_VBUS_SETTLE_TIMEOUT_US		250000
++
++#define SMB2_TYPEC_INTR_ENB_MASK \
++	(SMB2_TYPEC_CCOUT_DETACH_INT_EN_BIT | \
++	 SMB2_TYPEC_CCOUT_ATTACH_INT_EN_BIT | \
++	 SMB2_TYPEC_VBUS_ERROR_INT_EN_BIT | \
++	 SMB2_TYPEC_UFP_AUDIOADAPT_INT_EN_BIT | \
++	 SMB2_TYPEC_DEBOUNCE_DONE_INT_EN_BIT | \
++	 SMB2_TYPEC_CCSTATE_CHANGE_INT_EN_BIT | \
++	 SMB2_TYPEC_VBUS_DEASSERT_INT_EN_BIT | \
++	 SMB2_TYPEC_VBUS_ASSERT_INT_EN_BIT)
++
++#define SMB2_TYPEC_CFG_3_INTR_EN_MASK \
++	(SMB2_TYPEC_TRYSOURCE_DETECT_INT_EN_BIT | \
++	 SMB2_TYPEC_TRYSINK_DETECT_INT_EN_BIT)
++
++struct smb2_saved_reg {
++	unsigned int reg;
++	unsigned int mask;
++	unsigned int value;
++};
++
++struct pmic_typec_port {
++	struct device *dev;
++	struct tcpm_port *tcpm_port;
++	struct regmap *regmap;
++	struct regulator *vbus;
++	struct mutex lock;
++	struct delayed_work cc_debounce_work;
++	struct work_struct cc2_detach_work;
++	struct work_struct vconn_oc_work;
++	struct smb2_saved_reg cc2_saved[SMB2_CC2_SAVED_REGS];
++	u32 base;
++	int irq;
++	unsigned int cc2_saved_count;
++	unsigned int cc2_attempts;
++	unsigned int vconn_attempts;
++	enum typec_cc_status cc;
++	bool started;
++	bool irqs_enabled;
++	bool vbus_enabled;
++	bool vbus_high;
++	bool vbus_error_active;
++	bool vconn_enabled;
++	bool vconn_oc_active;
++	bool debouncing_cc;
++	bool cc_debounce_notify;
++	bool pbs_wa;
++	bool cc2_detach_wa;
++	bool cc2_detach_active;
++};
++
++static const char * const typec_cc_status_name[] = {
++	[TYPEC_CC_OPEN] = "Open",
++	[TYPEC_CC_RA] = "Ra",
++	[TYPEC_CC_RD] = "Rd",
++	[TYPEC_CC_RP_DEF] = "Rp-def",
++	[TYPEC_CC_RP_1_5] = "Rp-1.5",
++	[TYPEC_CC_RP_3_0] = "Rp-3.0",
++};
++
++static const char *smb2_cc_name(enum typec_cc_status cc)
++{
++	if (cc >= ARRAY_SIZE(typec_cc_status_name) || !typec_cc_status_name[cc])
++		return "unknown";
++
++	return typec_cc_status_name[cc];
++}
++
++/* STATUS_4 orientation is zero for CC1 and one for CC2. */
++static const char *smb2_active_cc_name(unsigned int status4)
++{
++	return status4 & SMB2_CC_ORIENTATION_BIT ? "cc2" : "cc1";
++}
++
++static const char *smb2_vconn_cc_name(unsigned int status4)
++{
++	return status4 & SMB2_CC_ORIENTATION_BIT ? "cc1" : "cc2";
++}
++
++static void smb2_schedule_cc_debounce_locked(struct pmic_typec_port *port)
++{
++	port->debouncing_cc = true;
++	mod_delayed_work(system_wq, &port->cc_debounce_work,
++			 msecs_to_jiffies(SMB2_CC_DEBOUNCE_MS));
++}
++
++static void smb2_cc_debounce_work(struct work_struct *work)
++{
++	struct pmic_typec_port *port =
++		container_of(to_delayed_work(work), struct pmic_typec_port,
++			     cc_debounce_work);
++	struct tcpm_port *tcpm_port;
++	bool notify;
++
++	mutex_lock(&port->lock);
++	port->debouncing_cc = false;
++	notify = port->cc_debounce_notify;
++	port->cc_debounce_notify = false;
++	tcpm_port = port->tcpm_port;
++	mutex_unlock(&port->lock);
++
++	if (notify && tcpm_port)
++		tcpm_cc_change(tcpm_port);
++}
++
++static int smb2_set_pbs_locked(struct pmic_typec_port *port, bool forced_sink)
++{
++	if (!port->pbs_wa)
++		return 0;
++
++	return regmap_write(port->regmap, SMB2_TM_IO_DTEST4_SEL_REG,
++			    forced_sink ? 0 : SMB2_PBS_ENABLED_VALUE);
++}
++
++static int smb2_cc2_save_update_locked(struct pmic_typec_port *port,
++				       unsigned int reg, unsigned int mask,
++				       unsigned int value)
++{
++	struct smb2_saved_reg *saved;
++	unsigned int old;
++	int ret;
++
++	if (port->cc2_saved_count >= ARRAY_SIZE(port->cc2_saved))
++		return -EOVERFLOW;
++
++	ret = regmap_read(port->regmap, reg, &old);
++	if (ret)
++		return ret;
++
++	saved = &port->cc2_saved[port->cc2_saved_count++];
++	saved->reg = reg;
++	saved->mask = mask;
++	saved->value = old & mask;
++
++	return regmap_update_bits(port->regmap, reg, mask, value);
++}
++
++static int smb2_cc2_restore_locked(struct pmic_typec_port *port)
++{
++	int first_error = 0;
++
++	while (port->cc2_saved_count) {
++		struct smb2_saved_reg *saved;
++		int ret;
++
++		saved = &port->cc2_saved[--port->cc2_saved_count];
++		ret = regmap_update_bits(port->regmap, saved->reg, saved->mask,
++					 saved->value);
++		if (ret && !first_error)
++			first_error = ret;
++	}
++
++	return first_error;
++}
++
++static int smb2_cc2_enter_locked(struct pmic_typec_port *port,
++				 unsigned int status4)
++{
++	int ret;
++
++	if (!port->cc2_detach_wa || port->cc2_detach_active)
++		return 0;
++
++	if (!(status4 & SMB2_CC_ATTACHED_BIT) ||
++	    !(status4 & SMB2_TYPEC_DEBOUNCE_DONE_STATUS_BIT) ||
++	    (status4 & SMB2_UFP_DFP_MODE_STATUS_BIT) ||
++	    !(status4 & SMB2_CC_ORIENTATION_BIT))
++		return 0;
++
++	port->cc2_saved_count = 0;
++	ret = smb2_cc2_save_update_locked(port,
++			port->base + SMB2_TYPE_C_CFG_2_REG,
++			SMB2_TYPE_C_UFP_MODE_BIT | SMB2_EN_TRY_SOURCE_MODE_BIT,
++			SMB2_TYPE_C_UFP_MODE_BIT);
++	if (ret)
++		goto restore;
++
++	ret = smb2_cc2_save_update_locked(port,
++			port->base + SMB2_TYPE_C_CFG_3_REG,
++			SMB2_EN_TRYSINK_MODE_BIT, 0);
++	if (ret)
++		goto restore;
++
++	ret = smb2_cc2_save_update_locked(port,
++			port->base + SMB2_TAPER_TIMER_SEL_CFG_REG,
++			SMB2_TYPEC_SPARE_CFG_BIT, SMB2_TYPEC_SPARE_CFG_BIT);
++	if (ret)
++		goto restore;
++
++	ret = smb2_cc2_save_update_locked(port,
++			port->base + SMB2_TYPE_C_SW_CTRL_REG,
++			SMB2_VCONN_EN_ORIENTATION_BIT, 0);
++	if (ret)
++		goto restore;
++
++	ret = smb2_cc2_save_update_locked(port, SMB2_MISC_CFG_REG,
++			SMB2_TCC_DEBOUNCE_20MS_BIT,
++			SMB2_TCC_DEBOUNCE_20MS_BIT);
++	if (ret)
++		goto restore;
++
++	port->cc2_attempts = 0;
++	port->cc2_detach_active = true;
++	return 1;
++
++restore:
++	smb2_cc2_restore_locked(port);
++	return ret;
++}
++
++static void smb2_cc2_cancel(struct pmic_typec_port *port)
++{
++	bool restore;
++
++	mutex_lock(&port->lock);
++	restore = port->cc2_detach_active || port->cc2_saved_count;
++	port->cc2_detach_active = false;
++	mutex_unlock(&port->lock);
++
++	/* Always synchronize a worker that may already hold a stale TCPM target. */
++	cancel_work_sync(&port->cc2_detach_work);
++
++	if (!restore)
++		return;
++
++	mutex_lock(&port->lock);
++	if (smb2_cc2_restore_locked(port))
++		dev_err(port->dev, "failed to restore CC2-detach settings\n");
++	mutex_unlock(&port->lock);
++}
++
++static void smb2_cc2_detach_work(struct work_struct *work)
++{
++	struct pmic_typec_port *port =
++		container_of(work, struct pmic_typec_port, cc2_detach_work);
++	struct tcpm_port *tcpm_port = NULL;
++	unsigned int status4, status5;
++	bool rerun = false;
++	bool failed = false;
++	int ret;
++
++	mutex_lock(&port->lock);
++	if (!port->cc2_detach_active)
++		goto unlock;
++
++	ret = regmap_update_bits(port->regmap,
++				 port->base + SMB2_TYPE_C_SW_CTRL_REG,
++				 SMB2_UFP_EN_CMD_BIT | SMB2_DFP_EN_CMD_BIT,
++				 SMB2_UFP_EN_CMD_BIT | SMB2_DFP_EN_CMD_BIT);
++	if (ret)
++		goto fail;
++
++	usleep_range(10000, 11000);
++
++	ret = regmap_update_bits(port->regmap,
++				 port->base + SMB2_TYPE_C_SW_CTRL_REG,
++				 SMB2_UFP_EN_CMD_BIT | SMB2_DFP_EN_CMD_BIT,
++				 SMB2_UFP_EN_CMD_BIT);
++	if (ret)
++		goto fail;
++
++	usleep_range(30000, 31000);
++
++	ret = regmap_read(port->regmap,
++			  port->base + SMB2_TYPE_C_STATUS_4_REG, &status4);
++	if (ret)
++		goto fail;
++
++	ret = regmap_read(port->regmap,
++			  port->base + SMB2_TYPE_C_STATUS_5_REG, &status5);
++	if (ret)
++		goto fail;
++
++	if ((status4 & SMB2_TYPEC_DEBOUNCE_DONE_STATUS_BIT) ||
++	    (status5 & SMB2_TIMER_STAGE_2_BIT)) {
++		if (++port->cc2_attempts < SMB2_CC2_MAX_ATTEMPTS) {
++			rerun = true;
++			goto unlock;
++		}
++
++		dev_warn(port->dev,
++			 "CC2-detach workaround timed out after %u attempts\n",
++			 port->cc2_attempts);
++	}
++
++	port->cc2_detach_active = false;
++	regmap_update_bits(port->regmap, port->base + SMB2_TYPE_C_SW_CTRL_REG,
++			   SMB2_EXIT_SNK_BASED_ON_CC_BIT, 0);
++	ret = smb2_cc2_restore_locked(port);
++	if (ret)
++		dev_err(port->dev, "failed to restore CC2-detach settings: %d\n",
++			ret);
++	tcpm_port = port->tcpm_port;
++	goto unlock;
++
++fail:
++	failed = true;
++	port->cc2_detach_active = false;
++	smb2_cc2_restore_locked(port);
++	tcpm_port = port->tcpm_port;
++unlock:
++	mutex_unlock(&port->lock);
++
++	if (failed)
++		dev_err(port->dev, "CC2-detach workaround failed: %d\n", ret);
++	if (rerun)
++		schedule_work(&port->cc2_detach_work);
++	else if (tcpm_port)
++		tcpm_cc_change(tcpm_port);
++}
++
++static int smb2_set_vconn_locked(struct pmic_typec_port *port, bool on,
++				 unsigned int status4)
++{
++	unsigned int mask;
++	unsigned int value;
++
++	if (on) {
++		mask = SMB2_VCONN_EN_ORIENTATION_BIT | SMB2_VCONN_EN_VALUE_BIT |
++		       SMB2_VCONN_EN_SRC_BIT;
++		value = SMB2_VCONN_EN_VALUE_BIT | SMB2_VCONN_EN_SRC_BIT;
++		if (!(status4 & SMB2_CC_ORIENTATION_BIT))
++			value |= SMB2_VCONN_EN_ORIENTATION_BIT;
++	} else {
++		mask = SMB2_VCONN_EN_VALUE_BIT;
++		value = 0;
++	}
++
++	return regmap_update_bits(port->regmap,
++				  port->base + SMB2_TYPE_C_SW_CTRL_REG,
++				  mask, value);
++}
++
++static void smb2_vconn_oc_work(struct work_struct *work)
++{
++	struct pmic_typec_port *port =
++		container_of(work, struct pmic_typec_port, vconn_oc_work);
++	struct tcpm_port *tcpm_port = NULL;
++	unsigned int status4 = 0;
++	bool error_recovery = false;
++	int ret = 0;
++	int i;
++
++	mutex_lock(&port->lock);
++	if (!port->vconn_oc_active || !port->started || !port->vconn_enabled)
++		goto clear_active;
++
++	dev_err(port->dev, "VCONN overcurrent detected\n");
++	ret = smb2_set_vconn_locked(port, false, 0);
++	if (ret)
++		goto fail;
++
++	if (++port->vconn_attempts > SMB2_VCONN_MAX_ATTEMPTS) {
++		dev_err(port->dev,
++			"VCONN recovery failed after %u attempts\n",
++			port->vconn_attempts - 1);
++		ret = -EIO;
++		goto fail;
++	}
++
++	for (i = 0; i < SMB2_VCONN_OC_FALL_TRIES; i++) {
++		usleep_range(1000, 2000);
++		ret = regmap_read(port->regmap,
++				  port->base + SMB2_TYPE_C_STATUS_4_REG,
++				  &status4);
++		if (!ret &&
++		    !(status4 & SMB2_TYPEC_VCONN_OVERCURR_STATUS_BIT))
++			break;
++	}
++	if (i == SMB2_VCONN_OC_FALL_TRIES) {
++		dev_err(port->dev, "VCONN overcurrent did not clear\n");
++		if (!ret)
++			ret = -ETIMEDOUT;
++		goto fail;
++	}
++
++	/* A detach makes VCONN recovery unnecessary. */
++	if (!(status4 & SMB2_CC_ATTACHED_BIT)) {
++		port->vconn_enabled = false;
++		port->vconn_attempts = 0;
++		goto clear_active;
++	}
++
++	ret = smb2_set_vconn_locked(port, true, status4);
++	if (ret)
++		goto fail;
++
++	port->vconn_oc_active = false;
++	mutex_unlock(&port->lock);
++	return;
++
++fail:
++	/* Keep the physical command off and force TCPM through ErrorRecovery. */
++	if (smb2_set_vconn_locked(port, false, 0))
++		dev_err(port->dev, "failed to force VCONN off after fault\n");
++	port->vconn_enabled = false;
++	port->vconn_attempts = 0;
++	tcpm_port = port->tcpm_port;
++	error_recovery = !!tcpm_port;
++	dev_err(port->dev, "VCONN fault is not recoverable: %d\n", ret);
++
++clear_active:
++	port->vconn_oc_active = false;
++	mutex_unlock(&port->lock);
++
++	if (error_recovery)
++		tcpm_port_error_recovery(tcpm_port);
++}
++
++static int smb2_vbus_disable_locked(struct pmic_typec_port *port,
++				    bool *notify);
++
++static irqreturn_t smb2_typec_port_isr(int irq, void *data)
++{
++	struct pmic_typec_port *port = data;
++	struct tcpm_port *tcpm_port;
++	unsigned int status4;
++	bool cancel_cc2 = false;
++	bool start_cc2 = false;
++	bool start_vconn_oc = false;
++	bool vbus_error_recovery = false;
++	bool vbus_change = false;
++	bool cc_change = false;
++	bool vbus_high;
++	int fault_ret;
++	int ret;
++
++	mutex_lock(&port->lock);
++	ret = regmap_read(port->regmap,
++			  port->base + SMB2_TYPE_C_STATUS_4_REG, &status4);
++	if (ret)
++		goto unlock;
++
++	vbus_high = !!(status4 & SMB2_TYPEC_VBUS_STATUS_BIT);
++	if (port->vbus_high != vbus_high) {
++		bool was_high = port->vbus_high;
++
++		port->vbus_high = vbus_high;
++		vbus_change = true;
++
++		if (!was_high && vbus_high && port->cc2_detach_active) {
++			port->cc2_detach_active = false;
++			cancel_cc2 = true;
++		} else if (was_high && !vbus_high) {
++			ret = smb2_cc2_enter_locked(port, status4);
++			if (ret < 0)
++				dev_err(port->dev,
++					"failed to enter CC2-detach workaround: %d\n",
++					ret);
++			else
++				start_cc2 = ret > 0;
++		}
++	}
++
++	if (status4 & SMB2_TYPEC_VBUS_ERROR_STATUS_BIT) {
++		if (!port->vbus_error_active) {
++			port->vbus_error_active = true;
++			vbus_error_recovery = true;
++			fault_ret = smb2_vbus_disable_locked(port,
++							    &vbus_change);
++			if (fault_ret)
++				dev_err(port->dev,
++					"failed to force VBUS off after fault: %d\n",
++					fault_ret);
++		}
++	} else {
++		port->vbus_error_active = false;
++	}
++
++	if ((status4 & SMB2_TYPEC_VCONN_OVERCURR_STATUS_BIT) &&
++	    port->vconn_enabled && !port->vconn_oc_active) {
++		port->vconn_oc_active = true;
++		start_vconn_oc = true;
++	}
++
++	if (!port->debouncing_cc && !port->cc2_detach_active)
++		cc_change = true;
++
++unlock:
++	tcpm_port = port->tcpm_port;
++	mutex_unlock(&port->lock);
++
++	if (cancel_cc2) {
++		cancel_work_sync(&port->cc2_detach_work);
++		mutex_lock(&port->lock);
++		if (smb2_cc2_restore_locked(port))
++			dev_err(port->dev,
++				"failed to restore CC2-detach settings\n");
++		mutex_unlock(&port->lock);
++	}
++
++	if (start_cc2)
++		schedule_work(&port->cc2_detach_work);
++	if (start_vconn_oc)
++		schedule_work(&port->vconn_oc_work);
++	if (vbus_change && tcpm_port)
++		tcpm_vbus_change(tcpm_port);
++	if (cc_change && tcpm_port)
++		tcpm_cc_change(tcpm_port);
++	if (vbus_error_recovery && tcpm_port) {
++		dev_err(port->dev, "Type-C VBUS error detected\n");
++		tcpm_port_error_recovery(tcpm_port);
++	}
++
++	return IRQ_HANDLED;
++}
++
++static int smb2_vbus_detect_locked(struct pmic_typec_port *port, bool *changed,
++				    unsigned int *status4_out)
++{
++	unsigned int status4;
++	bool was_high = port->vbus_high;
++	int ret;
++
++	ret = regmap_read(port->regmap,
++			  port->base + SMB2_TYPE_C_STATUS_4_REG, &status4);
++	if (ret)
++		return ret;
++
++	port->vbus_high = !!(status4 & SMB2_TYPEC_VBUS_STATUS_BIT);
++	if (changed)
++		*changed = was_high != port->vbus_high;
++	if (status4_out)
++		*status4_out = status4;
++	return port->vbus_high;
++}
++
++static int smb2_vbus_wait_locked(struct pmic_typec_port *port, bool high,
++				  bool *changed)
++{
++	unsigned int status4;
++	bool was_high = port->vbus_high;
++	int ret;
++
++	ret = regmap_read_poll_timeout(port->regmap,
++			port->base + SMB2_TYPE_C_STATUS_4_REG, status4,
++			!!(status4 & SMB2_TYPEC_VBUS_STATUS_BIT) == high,
++			SMB2_VBUS_POLL_US, SMB2_VBUS_SETTLE_TIMEOUT_US);
++	if (!ret || ret == -ETIMEDOUT)
++		port->vbus_high = !!(status4 & SMB2_TYPEC_VBUS_STATUS_BIT);
++	if (changed)
++		*changed = was_high != port->vbus_high;
++
++	return ret;
++}
++
++/*
++ * Balance only this consumer's regulator reference.  Hardware may already
++ * have shut the boost path down, but the regulator-core reference still has
++ * to be released exactly once.  A disable failure deliberately preserves
++ * ownership so TCPM's subsequent ErrorRecovery can retry it.
++ */
++static int smb2_vbus_disable_locked(struct pmic_typec_port *port, bool *notify)
++{
++	unsigned int status4;
++	bool changed = false;
++	int settle_ret;
++	int sensed;
++	int ret;
++
++	if (!port->vbus_enabled)
++		return 0;
++
++	ret = regulator_disable(port->vbus);
++	if (ret) {
++		sensed = smb2_vbus_detect_locked(port, &changed, &status4);
++		*notify |= changed;
++		if (sensed < 0) {
++			dev_warn_ratelimited(port->dev,
++				"failed to reconcile VBUS after disable error: %d\n",
++				sensed);
++		} else {
++			port->vbus_error_active =
++				status4 & SMB2_TYPEC_VBUS_ERROR_STATUS_BIT;
++		}
++		return ret;
++	}
++
++	port->vbus_enabled = false;
++	settle_ret = smb2_vbus_wait_locked(port, false, &changed);
++	*notify |= changed;
++	if (settle_ret)
++		dev_warn(port->dev, "VBUS did not settle low: %d\n",
++			 settle_ret);
++
++	/* Rearm fault reporting only after STATUS4 proves the fault is low. */
++	sensed = smb2_vbus_detect_locked(port, &changed, &status4);
++	*notify |= changed;
++	if (sensed < 0)
++		dev_warn_ratelimited(port->dev,
++			"failed to verify VBUS fault clear: %d\n", sensed);
++	else
++		port->vbus_error_active =
++			status4 & SMB2_TYPEC_VBUS_ERROR_STATUS_BIT;
++
++	/* Our source is off even if an external rail legitimately remains. */
++	return 0;
++}
++
++static int smb2_typec_get_vbus(struct tcpc_dev *tcpc)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct pmic_typec_port *port = tcpm->pmic_typec_port;
++	int ret;
++
++	mutex_lock(&port->lock);
++	ret = smb2_vbus_detect_locked(port, NULL, NULL);
++	if (ret < 0) {
++		dev_warn_ratelimited(port->dev,
++				     "failed to read sensed VBUS: %d\n", ret);
++		ret = port->vbus_high;
++	}
++	mutex_unlock(&port->lock);
++
++	return ret;
++}
++
++static int smb2_typec_set_vbus(struct tcpc_dev *tcpc, bool on, bool sink)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct pmic_typec_port *port = tcpm->pmic_typec_port;
++	struct tcpm_port *tcpm_port;
++	unsigned int status4;
++	bool notify = false;
++	bool changed = false;
++	bool vbus_error_recovery = false;
++	int rollback_ret;
++	int settle_ret;
++	int sensed;
++	int ret = 0;
++
++	(void)sink;
++	mutex_lock(&port->lock);
++	if (port->vbus_enabled == on) {
++		if (on) {
++			ret = smb2_vbus_wait_locked(port, true, &changed);
++			notify |= changed;
++			if (ret)
++				dev_err(port->dev,
++					"enabled VBUS is not present: %d\n", ret);
++		} else {
++			sensed = smb2_vbus_detect_locked(port, &changed, &status4);
++			notify |= changed;
++			if (sensed < 0) {
++				dev_warn_ratelimited(port->dev,
++					"failed to reconcile disabled VBUS: %d\n",
++					sensed);
++			} else {
++				port->vbus_error_active =
++					status4 & SMB2_TYPEC_VBUS_ERROR_STATUS_BIT;
++			}
++		}
++		goto unlock;
++	}
++
++	if (on) {
++		sensed = smb2_vbus_detect_locked(port, &changed, &status4);
++		notify |= changed;
++		if (sensed < 0) {
++			ret = sensed;
++			goto unlock;
++		}
++		if (status4 & SMB2_TYPEC_VBUS_ERROR_STATUS_BIT) {
++			if (!port->vbus_error_active) {
++				port->vbus_error_active = true;
++				vbus_error_recovery = true;
++			}
++			ret = -EIO;
++			dev_err(port->dev,
++				"refusing to source while VBUS error is asserted\n");
++			goto unlock;
++		}
++		port->vbus_error_active = false;
++		if (sensed) {
++			ret = -EBUSY;
++			dev_err(port->dev,
++				"refusing to source while VBUS is already present\n");
++			goto unlock;
++		}
++
++		ret = regulator_enable(port->vbus);
++		if (ret)
++			goto unlock;
++		port->vbus_enabled = true;
++
++		ret = smb2_vbus_wait_locked(port, true, &changed);
++		notify |= changed;
++		if (ret) {
++			rollback_ret = regulator_disable(port->vbus);
++			if (rollback_ret) {
++				dev_err(port->dev,
++					"VBUS failed to rise and rollback failed: %d\n",
++					rollback_ret);
++			} else {
++				port->vbus_enabled = false;
++				settle_ret = smb2_vbus_wait_locked(port, false,
++								   &changed);
++				notify |= changed;
++				if (settle_ret)
++					dev_warn(port->dev,
++						 "VBUS rollback did not settle low: %d\n",
++						 settle_ret);
++			}
++			goto unlock;
++		}
++	} else {
++		ret = smb2_vbus_disable_locked(port, &notify);
++	}
++unlock:
++	tcpm_port = port->tcpm_port;
++	mutex_unlock(&port->lock);
++	if (notify && tcpm_port)
++		tcpm_vbus_change(tcpm_port);
++	if (vbus_error_recovery && tcpm_port)
++		tcpm_port_error_recovery(tcpm_port);
++
++	dev_dbg(port->dev, "set_vbus: %s (%d)\n", str_on_off(on), ret);
++	return ret;
++}
++
++static int smb2_typec_get_cc(struct tcpc_dev *tcpc,
++			     enum typec_cc_status *cc1,
++			     enum typec_cc_status *cc2)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct pmic_typec_port *port = tcpm->pmic_typec_port;
++	enum typec_cc_status active_cc = TYPEC_CC_OPEN;
++	unsigned int status4 = 0;
++	unsigned int status = 0;
++	bool attached = false;
++	int ret = 0;
++
++	*cc1 = TYPEC_CC_OPEN;
++	*cc2 = TYPEC_CC_OPEN;
++
++	mutex_lock(&port->lock);
++	ret = regmap_read(port->regmap,
++			  port->base + SMB2_TYPE_C_STATUS_4_REG, &status4);
++	if (ret)
++		goto unlock;
++
++	attached = !!(status4 & SMB2_CC_ATTACHED_BIT);
++	if (port->debouncing_cc || port->cc2_detach_active) {
++		ret = -EBUSY;
++		goto unlock;
++	}
++	if (!attached)
++		goto unlock;
++
++	if (status4 & SMB2_UFP_DFP_MODE_STATUS_BIT) {
++		ret = regmap_read(port->regmap,
++				  port->base + SMB2_TYPE_C_STATUS_2_REG, &status);
++		if (ret)
++			goto unlock;
++
++		switch (status & SMB2_DFP_TYPEC_MASK) {
++		case SMB2_DFP_RA_RA_BIT:
++			active_cc = TYPEC_CC_RA;
++			*cc1 = TYPEC_CC_RA;
++			*cc2 = TYPEC_CC_RA;
++			break;
++		case SMB2_DFP_RD_RD_BIT:
++			active_cc = TYPEC_CC_RD;
++			*cc1 = TYPEC_CC_RD;
++			*cc2 = TYPEC_CC_RD;
++			break;
++		case SMB2_DFP_RD_OPEN_BIT:
++			active_cc = TYPEC_CC_RD;
++			break;
++		case SMB2_DFP_RD_RA_VCONN_BIT:
++			active_cc = TYPEC_CC_RD;
++			*cc1 = TYPEC_CC_RA;
++			*cc2 = TYPEC_CC_RA;
++			break;
++		default:
++			dev_warn_ratelimited(port->dev,
++					     "unexpected source CC status %#x\n",
++					     status);
++			active_cc = TYPEC_CC_RD;
++			break;
++		}
++	} else {
++		ret = regmap_read(port->regmap,
++				  port->base + SMB2_TYPE_C_STATUS_1_REG, &status);
++		if (ret)
++			goto unlock;
++
++		switch (status & SMB2_UFP_TYPEC_MASK) {
++		case SMB2_UFP_TYPEC_RDSTD_BIT:
++			active_cc = TYPEC_CC_RP_DEF;
++			break;
++		case SMB2_UFP_TYPEC_RD1P5_BIT:
++			active_cc = TYPEC_CC_RP_1_5;
++			break;
++		case SMB2_UFP_TYPEC_RD3P0_BIT:
++			active_cc = TYPEC_CC_RP_3_0;
++			break;
++		default:
++			dev_warn_ratelimited(port->dev,
++					     "unexpected sink CC status %#x\n",
++					     status);
++			active_cc = TYPEC_CC_RP_DEF;
++			break;
++		}
++	}
++
++	if (status4 & SMB2_CC_ORIENTATION_BIT)
++		*cc2 = active_cc;
++	else
++		*cc1 = active_cc;
++
++unlock:
++	mutex_unlock(&port->lock);
++	dev_dbg(port->dev,
++		"get_cc: status4=%#x cc1=%s cc2=%s attached=%d active=%s\n",
++		status4, smb2_cc_name(*cc1), smb2_cc_name(*cc2), attached,
++		smb2_active_cc_name(status4));
++	return ret;
++}
++
++static int smb2_set_rp_locked(struct pmic_typec_port *port,
++			      enum typec_cc_status cc)
++{
++	unsigned int value;
++
++	switch (cc) {
++	case TYPEC_CC_RP_DEF:
++		value = 0;
++		break;
++	case TYPEC_CC_RP_1_5:
++		value = SMB2_EN_80UA_180UA_CUR_SOURCE_BIT;
++		break;
++	case TYPEC_CC_RP_3_0:
++		return -EOPNOTSUPP;
++	default:
++		return -EINVAL;
++	}
++
++	return regmap_update_bits(port->regmap,
++				  port->base + SMB2_TYPE_C_CFG_2_REG,
++				  SMB2_EN_80UA_180UA_CUR_SOURCE_BIT, value);
++}
++
++static int smb2_typec_set_cc(struct tcpc_dev *tcpc, enum typec_cc_status cc)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct pmic_typec_port *port = tcpm->pmic_typec_port;
++	unsigned int role;
++	bool forced_sink = false;
++	int ret;
++
++	mutex_lock(&port->lock);
++	if (port->cc2_detach_active) {
++		ret = -EBUSY;
++		goto unlock;
++	}
++
++	switch (cc) {
++	case TYPEC_CC_OPEN:
++		role = SMB2_TYPEC_DISABLE_CMD_BIT;
++		break;
++	case TYPEC_CC_RP_DEF:
++	case TYPEC_CC_RP_1_5:
++	case TYPEC_CC_RP_3_0:
++		ret = smb2_set_rp_locked(port, cc);
++		if (ret)
++			goto unlock;
++		role = SMB2_DFP_EN_CMD_BIT;
++		break;
++	case TYPEC_CC_RD:
++		role = SMB2_UFP_EN_CMD_BIT;
++		forced_sink = true;
++		break;
++	default:
++		ret = -EINVAL;
++		goto unlock;
++	}
++
++	ret = smb2_set_pbs_locked(port, forced_sink);
++	if (ret)
++		goto unlock;
++
++	ret = regmap_update_bits(port->regmap,
++				 port->base + SMB2_TYPE_C_SW_CTRL_REG,
++				 SMB2_TYPEC_POWER_ROLE_CMD_MASK, role);
++	if (ret)
++		goto unlock;
++
++	port->cc = cc;
++	port->cc_debounce_notify = true;
++	smb2_schedule_cc_debounce_locked(port);
++
++unlock:
++	mutex_unlock(&port->lock);
++	dev_dbg(port->dev, "set_cc: %s (%d)\n", smb2_cc_name(cc), ret);
++	return ret;
++}
++
++static int smb2_typec_set_polarity(struct tcpc_dev *tcpc,
++				   enum typec_cc_polarity polarity)
++{
++	/* The connector graph lets the QMP PHY switch USB3 polarity. */
++	return 0;
++}
++
++static int smb2_typec_set_vconn(struct tcpc_dev *tcpc, bool on)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct pmic_typec_port *port = tcpm->pmic_typec_port;
++	unsigned int status4 = 0;
++	int ret;
++
++	mutex_lock(&port->lock);
++	if (port->cc2_detach_active && on) {
++		ret = -EBUSY;
++		goto unlock;
++	}
++	if (port->vconn_enabled == on) {
++		ret = 0;
++		if (!on)
++			goto reset_state;
++		goto unlock;
++	}
++
++	if (on) {
++		ret = regmap_read(port->regmap,
++				  port->base + SMB2_TYPE_C_STATUS_4_REG,
++				  &status4);
++		if (ret)
++			goto unlock;
++		if (!(status4 & SMB2_CC_ATTACHED_BIT)) {
++			ret = -ENOTCONN;
++			goto unlock;
++		}
++		if (status4 & SMB2_TYPEC_VCONN_OVERCURR_STATUS_BIT) {
++			ret = -EIO;
++			goto unlock;
++		}
++	}
++
++	ret = smb2_set_vconn_locked(port, on, status4);
++	if (ret)
++		goto unlock;
++	port->vconn_enabled = on;
++
++reset_state:
++	port->vconn_attempts = 0;
++	if (!on)
++		port->vconn_oc_active = false;
++
++unlock:
++	mutex_unlock(&port->lock);
++	dev_dbg(port->dev, "set_vconn: %s on %s (%d)\n", str_on_off(on),
++		smb2_vconn_cc_name(status4), ret);
++	return ret;
++}
++
++static int smb2_typec_start_toggling(struct tcpc_dev *tcpc,
++				     enum typec_port_type port_type,
++				     enum typec_cc_status cc)
++{
++	struct pmic_typec *tcpm = tcpc_to_tcpm(tcpc);
++	struct pmic_typec_port *port = tcpm->pmic_typec_port;
++	unsigned int role;
++	unsigned int trysink;
++	bool forced_sink;
++	int ret;
++
++	mutex_lock(&port->lock);
++	if (port->cc2_detach_active) {
++		ret = -EBUSY;
++		goto unlock;
++	}
++
++	switch (port_type) {
++	case TYPEC_PORT_SRC:
++		ret = smb2_set_rp_locked(port, cc);
++		if (ret)
++			goto unlock;
++		role = SMB2_DFP_EN_CMD_BIT;
++		trysink = 0;
++		forced_sink = false;
++		break;
++	case TYPEC_PORT_SNK:
++		role = SMB2_UFP_EN_CMD_BIT;
++		trysink = 0;
++		forced_sink = true;
++		break;
++	case TYPEC_PORT_DRP:
++		ret = smb2_set_rp_locked(port, cc);
++		if (ret)
++			goto unlock;
++		role = 0;
++		trysink = SMB2_EN_TRYSINK_MODE_BIT;
++		forced_sink = false;
++		break;
++	default:
++		ret = -EINVAL;
++		goto unlock;
++	}
++
++	ret = smb2_set_pbs_locked(port, forced_sink);
++	if (ret)
++		goto unlock;
++
++	ret = regmap_update_bits(port->regmap,
++				 port->base + SMB2_TYPE_C_CFG_3_REG,
++				 SMB2_EN_TRYSINK_MODE_BIT, trysink);
++	if (ret)
++		goto unlock;
++
++	ret = regmap_update_bits(port->regmap,
++				 port->base + SMB2_TYPE_C_SW_CTRL_REG,
++				 SMB2_TYPEC_POWER_ROLE_CMD_MASK, role);
++	if (ret)
++		goto unlock;
++
++	port->cc = cc;
++	port->cc_debounce_notify = true;
++	smb2_schedule_cc_debounce_locked(port);
++
++unlock:
++	mutex_unlock(&port->lock);
++	return ret;
++}
++
++static int smb2_typec_port_start(struct pmic_typec *tcpm,
++				 struct tcpm_port *tcpm_port)
++{
++	struct pmic_typec_port *port = tcpm->pmic_typec_port;
++	unsigned int status4;
++	bool enable_irq_line = false;
++	bool vbus_error_recovery = false;
++	int ret;
++
++	mutex_lock(&port->lock);
++	port->tcpm_port = tcpm_port;
++	if (port->started) {
++		if (tcpm_port && !port->irqs_enabled) {
++			ret = regmap_read(port->regmap,
++					  port->base + SMB2_TYPE_C_STATUS_4_REG,
++					  &status4);
++			if (ret)
++				goto unlock;
++			port->vbus_error_active =
++				status4 & SMB2_TYPEC_VBUS_ERROR_STATUS_BIT;
++			vbus_error_recovery = port->vbus_error_active;
++			port->irqs_enabled = true;
++			enable_irq_line = true;
++		}
++		ret = 0;
++		goto unlock;
++	}
++
++	ret = smb2_set_pbs_locked(port, false);
++	if (ret)
++		goto unlock;
++
++	ret = regmap_write(port->regmap,
++			   port->base + SMB2_TYPE_C_INTRPT_ENB_REG,
++			   SMB2_TYPEC_INTR_ENB_MASK);
++	if (ret)
++		goto unlock;
++
++	ret = regmap_update_bits(port->regmap,
++				 port->base + SMB2_TYPE_C_CFG_REG,
++				 SMB2_FACTORY_MODE_DETECTION_EN_BIT |
++				 SMB2_VCONN_OC_CFG_BIT, 0);
++	if (ret)
++		goto unlock;
++
++	ret = regmap_update_bits(port->regmap,
++				 port->base + SMB2_TYPE_C_CFG_2_REG,
++				 SMB2_DFP_CC_1P4V_OR_1P6V_BIT |
++				 SMB2_VCONN_SOFTSTART_CFG_MASK,
++				 SMB2_DFP_CC_1P4V_OR_1P6V_BIT |
++				 SMB2_VCONN_SOFTSTART_CFG_MASK);
++	if (ret)
++		goto unlock;
++
++	ret = regmap_update_bits(port->regmap,
++				 port->base + SMB2_TYPE_C_CFG_3_REG,
++				 SMB2_TYPEC_LEGACY_CABLE_INT_EN_BIT |
++				 SMB2_TYPEC_NONCOMPLIANT_LEGACY_CABLE_INT_EN_BIT |
++				 SMB2_TYPEC_CFG_3_INTR_EN_MASK |
++				 SMB2_EN_TRYSINK_MODE_BIT,
++				 SMB2_TYPEC_CFG_3_INTR_EN_MASK |
++				 SMB2_EN_TRYSINK_MODE_BIT);
++	if (ret)
++		goto unlock;
++
++	ret = regmap_update_bits(port->regmap,
++				 port->base + SMB2_TYPE_C_SW_CTRL_REG,
++				 SMB2_TYPEC_POWER_ROLE_CMD_MASK |
++				 SMB2_TYPEC_VCONN_OC_INT_EN_BIT |
++				 SMB2_VCONN_EN_SRC_BIT |
++				 SMB2_VCONN_EN_VALUE_BIT,
++				 SMB2_TYPEC_VCONN_OC_INT_EN_BIT |
++				 SMB2_VCONN_EN_SRC_BIT);
++	if (ret)
++		goto unlock;
++
++	ret = smb2_vbus_detect_locked(port, NULL, NULL);
++	if (ret < 0)
++		goto unlock;
++
++	port->started = true;
++	if (tcpm_port) {
++		port->irqs_enabled = true;
++		enable_irq_line = true;
++	}
++	ret = 0;
++
++unlock:
++	if (ret) {
++		regmap_write(port->regmap,
++			     port->base + SMB2_TYPE_C_INTRPT_ENB_REG, 0);
++		regmap_update_bits(port->regmap,
++				   port->base + SMB2_TYPE_C_SW_CTRL_REG,
++				   SMB2_TYPEC_POWER_ROLE_CMD_MASK |
++				   SMB2_TYPEC_VCONN_OC_INT_EN_BIT |
++				   SMB2_VCONN_EN_VALUE_BIT,
++				   SMB2_TYPEC_DISABLE_CMD_BIT);
++		smb2_set_pbs_locked(port, false);
++		port->tcpm_port = NULL;
++		port->irqs_enabled = false;
++	}
++	mutex_unlock(&port->lock);
++	if (enable_irq_line)
++		enable_irq(port->irq);
++	if (vbus_error_recovery) {
++		dev_err(port->dev,
++			"Type-C VBUS error present while enabling interrupts\n");
++		tcpm_port_error_recovery(tcpm_port);
++	}
++	return ret;
++}
++
++static void smb2_typec_port_quiesce(struct pmic_typec *tcpm)
++{
++	struct pmic_typec_port *port = tcpm->pmic_typec_port;
++	bool disable_irq_line = false;
++
++	mutex_lock(&port->lock);
++	port->tcpm_port = NULL;
++	if (port->irqs_enabled) {
++		port->irqs_enabled = false;
++		disable_irq_line = true;
++	}
++	mutex_unlock(&port->lock);
++
++	if (disable_irq_line)
++		disable_irq(port->irq);
++
++	cancel_delayed_work_sync(&port->cc_debounce_work);
++	cancel_work_sync(&port->vconn_oc_work);
++	smb2_cc2_cancel(port);
++
++	mutex_lock(&port->lock);
++	port->debouncing_cc = false;
++	port->cc_debounce_notify = false;
++	port->vconn_oc_active = false;
++	mutex_unlock(&port->lock);
++}
++
++static void smb2_typec_port_stop(struct pmic_typec *tcpm)
++{
++	struct pmic_typec_port *port = tcpm->pmic_typec_port;
++	int ret;
++
++	smb2_typec_port_quiesce(tcpm);
++
++	mutex_lock(&port->lock);
++	port->started = false;
++	ret = regmap_write(port->regmap,
++			   port->base + SMB2_TYPE_C_INTRPT_ENB_REG, 0);
++	if (ret)
++		dev_err(port->dev, "failed to mask Type-C interrupts: %d\n", ret);
++	ret = regmap_update_bits(port->regmap,
++				 port->base + SMB2_TYPE_C_SW_CTRL_REG,
++				 SMB2_TYPEC_POWER_ROLE_CMD_MASK |
++				 SMB2_TYPEC_VCONN_OC_INT_EN_BIT |
++				 SMB2_VCONN_EN_VALUE_BIT,
++				 SMB2_TYPEC_DISABLE_CMD_BIT);
++	if (ret)
++		dev_err(port->dev, "failed to disable Type-C/VCONN: %d\n", ret);
++	ret = smb2_set_pbs_locked(port, false);
++	if (ret)
++		dev_err(port->dev, "failed to restore PBS control: %d\n", ret);
++	port->vconn_enabled = false;
++	port->vconn_oc_active = false;
++	port->vconn_attempts = 0;
++	port->vbus_error_active = false;
++	if (port->vbus_enabled) {
++		ret = regulator_disable(port->vbus);
++		if (ret)
++			dev_err(port->dev,
++				"failed to disable VBUS during removal: %d\n", ret);
++		else
++			port->vbus_enabled = false;
++	}
++	port->tcpm_port = NULL;
++	mutex_unlock(&port->lock);
++}
++
++int qcom_pmic_typec_port_probe(struct platform_device *pdev,
++			       struct pmic_typec *tcpm,
++			       const struct pmic_typec_port_resources *res,
++			       struct regmap *regmap, u32 base)
++{
++	struct device *dev = &pdev->dev;
++	struct pmic_typec_port *port;
++	struct device_node *connector;
++	int ret;
++
++	if (base != 0x1300)
++		return dev_err_probe(dev, -EINVAL,
++				     "unsupported Type-C base %#x\n", base);
++	if (!res || !res->irq_name)
++		return -EINVAL;
++
++	port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
++	if (!port)
++		return -ENOMEM;
++
++	port->dev = dev;
++	port->regmap = regmap;
++	port->base = base;
++	port->cc = TYPEC_CC_OPEN;
++	port->pbs_wa = tcpm->pbs_wa;
++	port->cc2_detach_wa = tcpm->cc2_detach_wa;
++	mutex_init(&port->lock);
++	INIT_DELAYED_WORK(&port->cc_debounce_work, smb2_cc_debounce_work);
++	INIT_WORK(&port->cc2_detach_work, smb2_cc2_detach_work);
++	INIT_WORK(&port->vconn_oc_work, smb2_vconn_oc_work);
++
++	connector = to_of_node(tcpm->tcpc.fwnode);
++	if (connector)
++		port->vbus = devm_of_regulator_get_optional(dev, connector,
++							     "vbus");
++	else
++		port->vbus = ERR_PTR(-ENODEV);
++
++	if (IS_ERR(port->vbus) && PTR_ERR(port->vbus) == -ENODEV)
++		port->vbus = devm_regulator_get_optional(dev, "vdd-vbus");
++	if (IS_ERR(port->vbus))
++		return dev_err_probe(dev, PTR_ERR(port->vbus),
++				     "missing connector vbus-supply\n");
++
++	port->irq = platform_get_irq_byname(pdev, res->irq_name);
++	if (port->irq < 0)
++		return port->irq;
++
++	ret = devm_request_threaded_irq(dev, port->irq, NULL,
++					smb2_typec_port_isr,
++					IRQF_ONESHOT | IRQF_NO_AUTOEN,
++					res->irq_name, port);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to request Type-C IRQ\n");
++
++	tcpm->pmic_typec_port = port;
++	tcpm->tcpc.get_vbus = smb2_typec_get_vbus;
++	tcpm->tcpc.set_vbus = smb2_typec_set_vbus;
++	tcpm->tcpc.set_cc = smb2_typec_set_cc;
++	tcpm->tcpc.get_cc = smb2_typec_get_cc;
++	tcpm->tcpc.set_polarity = smb2_typec_set_polarity;
++	tcpm->tcpc.set_vconn = smb2_typec_set_vconn;
++	tcpm->tcpc.start_toggling = smb2_typec_start_toggling;
++	tcpm->port_start = smb2_typec_port_start;
++	tcpm->port_quiesce = smb2_typec_port_quiesce;
++	tcpm->port_stop = smb2_typec_port_stop;
++
++	return 0;
++}
++
++const struct pmic_typec_port_resources smb2_port_res = {
++	.irq_name = "type-c-change",
++};
+diff --git a/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.h b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.h
+--- /dev/null
++++ b/drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.h
+@@ -0,0 +1,26 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
++ * Copyright (c) 2023, Linaro Ltd. All rights reserved.
++ */
++#ifndef __QCOM_PMIC_TYPEC_SMB2_PORT_H__
++#define __QCOM_PMIC_TYPEC_SMB2_PORT_H__
++
++#include <linux/platform_device.h>
++#include <linux/usb/tcpm.h>
++
++struct pmic_typec_port_resources {
++	const char	*irq_name;
++};
++
++/* API */
++
++extern const struct pmic_typec_port_resources smb2_port_res;
++
++int qcom_pmic_typec_port_probe(struct platform_device *pdev,
++			       struct pmic_typec *tcpm,
++			       const struct pmic_typec_port_resources *res,
++			       struct regmap *regmap,
++			       u32 base);
++
++#endif /* __QCOM_PMIC_TYPEC_SMB2_PORT_H__ */
+diff --git a/drivers/usb/typec/polaris-smb2/Makefile b/drivers/usb/typec/polaris-smb2/Makefile
+--- /dev/null
++++ b/drivers/usb/typec/polaris-smb2/Makefile
+@@ -0,0 +1,5 @@
++# SPDX-License-Identifier: GPL-2.0-only
++obj-$(CONFIG_TYPEC_QCOM_PMIC_SMB2) += qcom_pmic_typec_smb2.o
++qcom_pmic_typec_smb2-y := qcom_pmic_typec_smb2_main.o \
++    qcom_pmic_typec_smb2_port.o qcom_pmic_typec_pdphy.o \
++    qcom_pmic_typec_pdphy_stub.o
+diff --git a/drivers/usb/typec/Makefile b/drivers/usb/typec/Makefile
+--- a/drivers/usb/typec/Makefile
++++ b/drivers/usb/typec/Makefile
+@@ -12,3 +12,5 @@
+ obj-$(CONFIG_TYPEC_RT1719)	+= rt1719.o
+ obj-$(CONFIG_TYPEC_WUSB3801)	+= wusb3801.o
+ obj-$(CONFIG_TYPEC)		+= mux/
++
++obj-$(CONFIG_TYPEC_QCOM_PMIC_SMB2) += polaris-smb2/
+diff --git a/drivers/usb/typec/Kconfig b/drivers/usb/typec/Kconfig
+--- a/drivers/usb/typec/Kconfig
++++ b/drivers/usb/typec/Kconfig
+@@ -45,6 +45,18 @@
+ 	  and ABI (Documentation/ABI/testing/sysfs-class-typec).
+ 
+ if TYPEC
++
++config TYPEC_QCOM_PMIC_SMB2
++	tristate "Qualcomm SMB2 Type-C controller (polaris lab)"
++	depends on OF && SPMI && MFD_SPMI_PMIC
++	depends on TYPEC_TCPM && CHARGER_QCOM_SMB2
++	depends on REGULATOR && POWER_SUPPLY
++	select USB_ROLE_SWITCH
++	help
++	  Experimental SMB2 Type-C backend from Sam Day's standalone
++	  qcom-pmic-typec-smb2 driver. Polaris test04 rejects PD-enabled
++	  connectors. Keep the driver blacklisted until controlled testing.
++
+ 
+ source "drivers/usb/typec/tcpm/Kconfig"
+ 
+diff --git a/drivers/regulator/qcom_usb_vbus-regulator.c b/drivers/regulator/qcom_usb_vbus-regulator.c
+--- a/drivers/regulator/qcom_usb_vbus-regulator.c
++++ b/drivers/regulator/qcom_usb_vbus-regulator.c
+@@ -8,6 +8,8 @@
+ #include <linux/err.h>
+ #include <linux/kernel.h>
+ #include <linux/of.h>
++#include <linux/property.h>
++#include <linux/slab.h>
+ #include <linux/platform_device.h>
+ #include <linux/regulator/driver.h>
+ #include <linux/regulator/of_regulator.h>
+@@ -32,7 +34,11 @@
+ 	.set_current_limit = regulator_set_current_limit_regmap,
+ };
+ 
+-static struct regulator_desc qcom_usb_vbus_rdesc = {
++static const unsigned int pmi8998_curr_table[] = {
++	250000, 500000, 750000, 1000000, 1250000, 1500000,
++};
++
++static const struct regulator_desc qcom_usb_vbus_rdesc = {
+ 	.name = "usb_vbus",
+ 	.ops = &qcom_usb_vbus_reg_ops,
+ 	.owner = THIS_MODULE,
+@@ -45,6 +51,7 @@
+ {
+ 	struct device *dev = &pdev->dev;
+ 	struct regulator_dev *rdev;
++	struct regulator_desc *rdesc;
+ 	struct regmap *regmap;
+ 	struct regulator_config config = { };
+ 	struct regulator_init_data *init_data;
+@@ -63,21 +70,28 @@
+ 		return -ENOENT;
+ 	}
+ 
+-	init_data = of_get_regulator_init_data(dev, dev->of_node,
+-					       &qcom_usb_vbus_rdesc);
++	rdesc = devm_kmemdup(dev, &qcom_usb_vbus_rdesc, sizeof(*rdesc), GFP_KERNEL);
++	if (!rdesc)
++		return -ENOMEM;
++	if (device_is_compatible(dev, "qcom,pmi8998-vbus-reg")) {
++		rdesc->curr_table = pmi8998_curr_table;
++		rdesc->n_current_limits = ARRAY_SIZE(pmi8998_curr_table);
++	}
++
++	init_data = of_get_regulator_init_data(dev, dev->of_node, rdesc);
+ 	if (!init_data)
+ 		return -ENOMEM;
+ 
+-	qcom_usb_vbus_rdesc.enable_reg = base + CMD_OTG;
+-	qcom_usb_vbus_rdesc.enable_mask = OTG_EN;
+-	qcom_usb_vbus_rdesc.csel_reg = base + OTG_CURRENT_LIMIT_CFG;
+-	qcom_usb_vbus_rdesc.csel_mask = OTG_CURRENT_LIMIT_MASK;
++	rdesc->enable_reg = base + CMD_OTG;
++	rdesc->enable_mask = OTG_EN;
++	rdesc->csel_reg = base + OTG_CURRENT_LIMIT_CFG;
++	rdesc->csel_mask = OTG_CURRENT_LIMIT_MASK;
+ 	config.dev = dev;
+ 	config.init_data = init_data;
+ 	config.of_node = dev->of_node;
+ 	config.regmap = regmap;
+ 
+-	rdev = devm_regulator_register(dev, &qcom_usb_vbus_rdesc, &config);
++	rdev = devm_regulator_register(dev, rdesc, &config);
+ 	if (IS_ERR(rdev)) {
+ 		ret = PTR_ERR(rdev);
+ 		dev_err(dev, "not able to register vbus reg %d\n", ret);
+@@ -85,13 +99,16 @@
+ 	}
+ 
+ 	/* Disable HW logic for VBUS enable */
+-	regmap_update_bits(regmap, base + OTG_CFG, OTG_EN_SRC_CFG, 0);
++	ret = regmap_update_bits(regmap, base + OTG_CFG, OTG_EN_SRC_CFG, 0);
++	if (ret)
++		return ret;
+ 
+ 	return 0;
+ }
+ 
+ static const struct of_device_id qcom_usb_vbus_regulator_match[] = {
+ 	{ .compatible = "qcom,pm8150b-vbus-reg" },
++	{ .compatible = "qcom,pmi8998-vbus-reg" },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, qcom_usb_vbus_regulator_match);
+diff --git a/drivers/power/supply/qcom_smbx.c b/drivers/power/supply/qcom_smbx.c
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -238,6 +238,7 @@
+ 	unsigned int base;
+ 	struct regmap *regmap;
+ 	struct power_supply_battery_info *batt_info;
++	u32 input_current_limit_ua;
+ 	enum smb_generation gen;
+ 
+ 	struct delayed_work status_change_work;
+@@ -427,6 +428,7 @@
+ 			"Can't set current limit higher than 4800000uA");
+ 		return -EINVAL;
+ 	}
++	val = min(val, chip->input_current_limit_ua);
+ 	val_raw = val / CURRENT_SCALE_FACTOR;
+ 
+ 	return regmap_write(chip->regmap, chip->base + USBIN_CURRENT_LIMIT_CFG,
+@@ -986,6 +988,13 @@
+ 	chip->dev = &pdev->dev;
+ 	chip->name = pdev->name;
+ 
++	chip->input_current_limit_ua = CURRENT_MAX_UA;
++	device_property_read_u32(chip->dev, "input-current-limit-microamp",
++				 &chip->input_current_limit_ua);
++	if (chip->input_current_limit_ua < 25000 ||
++	    chip->input_current_limit_ua > CURRENT_MAX_UA)
++		return dev_err_probe(chip->dev, -EINVAL, "invalid input current cap\n");
++
+ 	chip->regmap = dev_get_regmap(pdev->dev.parent, NULL);
+ 	if (!chip->regmap)
+ 		return dev_err_probe(chip->dev, -ENODEV,
+@@ -1089,7 +1098,8 @@
+ 	 * reporting.
+ 	 */
+ 	rc = regmap_write(chip->regmap, chip->base + FAST_CHARGE_CURRENT_CFG,
+-			  1950000 / CURRENT_SCALE_FACTOR);
++			  min(1950000, chip->batt_info->constant_charge_current_max_ua) /
++			  CURRENT_SCALE_FACTOR);
+ 	if (rc < 0)
+ 		return dev_err_probe(chip->dev, rc,
+ 				     "Couldn't write fast charge current cfg");
+diff --git a/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts b/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts
+--- a/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts
++++ b/arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts
+@@ -42,6 +42,13 @@
+ 	qcom,msm-id = <QCOM_ID_SDM845 0x20001>;
+ 	qcom,board-id = <0x2a 0x0>;
+ 
++	/* OEM ATL/COS profiles: 4.4 V. Initial wired tests cap current to 0.5 A. */
++	polaris_battery: battery {
++		compatible = "simple-battery";
++		voltage-max-design-microvolt = <4400000>;
++		constant-charge-current-max-microamp = <500000>;
++	};
++
+ 	aliases {
+ 		serial0 = &uart9;
+ 		serial1 = &uart6;
+@@ -644,7 +651,9 @@
+ };
+ 
+ &usb_1_dwc3 {
+-	dr_mode = "peripheral";
++	dr_mode = "otg";
++	usb-role-switch;
++	role-switch-default-mode = "peripheral";
+ 
+ 	/* Fastest mode for USB 2 */
+ 	maximum-speed = "high-speed";
+@@ -715,3 +724,64 @@
+ 	qcom,snoc-host-cap-skip-quirk;
+ 	status = "okay";
+ };
++
++/* Initial no-PD PMI8998 Type-C experiment. Drivers are manually loaded. */
++&pmi8998_lsid0 {
++	polaris_vbus: usb-vbus-regulator@1100 {
++		compatible = "qcom,pmi8998-vbus-reg";
++		reg = <0x1100>;
++		regulator-name = "polaris-usb-vbus";
++		regulator-min-microamp = <500000>;
++		regulator-max-microamp = <500000>;
++	};
++
++	polaris_typec: typec@1300 {
++		compatible = "qcom,pmi8998-typec";
++		reg = <0x1300>, <0x1700>;
++		interrupts = <0x2 0x13 0x7 IRQ_TYPE_EDGE_RISING>,
++			     <0x2 0x17 0x0 IRQ_TYPE_EDGE_RISING>,
++			     <0x2 0x17 0x1 IRQ_TYPE_EDGE_RISING>,
++			     <0x2 0x17 0x2 IRQ_TYPE_EDGE_RISING>,
++			     <0x2 0x17 0x3 IRQ_TYPE_EDGE_RISING>,
++			     <0x2 0x17 0x4 IRQ_TYPE_EDGE_RISING>,
++			     <0x2 0x17 0x5 IRQ_TYPE_EDGE_RISING>,
++			     <0x2 0x17 0x6 IRQ_TYPE_EDGE_RISING>;
++		interrupt-names = "type-c-change", "sig-tx", "sig-rx", "msg-tx",
++				  "msg-rx", "msg-tx-failed", "msg-tx-discarded",
++				  "msg-rx-discarded";
++		charger-power-supply = <&pmi8998_charger>;
++		vdd-vbus-supply = <&polaris_vbus>;
++		vdd-pdphy-supply = <&vreg_l24a_3p075>;
++
++		connector {
++			compatible = "usb-c-connector";
++			label = "USB-C";
++			power-role = "dual";
++			data-role = "dual";
++			try-power-role = "sink";
++			vbus-supply = <&polaris_vbus>;
++			typec-power-opmode = "default";
++			pd-disable;
++
++			port {
++				polaris_typec_hs: endpoint {
++					remote-endpoint = <&usb_1_dwc3_hs>;
++				};
++			};
++		};
++	};
++};
++
++&usb_1_dwc3_hs {
++	remote-endpoint = <&polaris_typec_hs>;
++};
++
++&pmi8998_charger {
++	monitored-battery = <&polaris_battery>;
++	input-current-limit-microamp = <500000>;
++	status = "okay";
++};
++
++&pmi8998_fg {
++	status = "okay";
++};

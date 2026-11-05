@@ -1,0 +1,23 @@
+#!/bin/sh
+# Apply the recovered panel-order fix to the completed, isolated test01 build.
+set -eu
+cd /mnt/project/build/recipe
+export CARCH=aarch64 JOBS=12 MAKEFLAGS=-j12
+export SRCDEST=/mnt/project/build/distfiles REPODEST=/mnt/project/build/packages
+abuild -F verify
+cd src/linux-sdm845-7.1-rc1-r0
+if ! grep -q 'pinfo->base.prepare_prev_first = true;' drivers/gpu/drm/panel/panel-novatek-nt35596s.c; then
+    patch -p1 < /mnt/project/build/recipe/0004-nt35596s-prepare-prev-first.patch
+fi
+cd ../..
+# The previous build process has discarded its random key passphrase.
+# Replace only the isolated test key, then rebuild kernel certificate + modules.
+export KBUILD_SIGN_PIN=$(openssl rand -hex 32)
+openssl req -new -x509 -newkey rsa:4096 -sha512 -days 365 \
+    -passout env:KBUILD_SIGN_PIN -subj '/CN=Polaris test01 module signing/' \
+    -keyout src/linux-sdm845-7.1-rc1-r0/certs/polaris-test-signing-key.pem \
+    -out src/linux-sdm845-7.1-rc1-r0/certs/polaris-test-signing-key.pem
+chmod 600 src/linux-sdm845-7.1-rc1-r0/certs/polaris-test-signing-key.pem
+abuild -F build
+abuild -F package
+printf '\nLCD candidate incremental build and package staging complete.\n'

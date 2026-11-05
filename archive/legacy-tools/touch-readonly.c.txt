@@ -1,0 +1,85 @@
+/* SPDX-License-Identifier: MIT */
+/* Read only the verified Synaptics touchscreen; no grab or device writes. */
+#include <linux/input.h>
+
+int main(int argc, char **argv)
+{
+	struct timespec start, now;
+	struct input_event events[64];
+	char name[128] = { 0 };
+	unsigned long total = 0, frames = 0, contacts = 0, dropped = 0;
+	int xmin = 2147483647, xmax = -1, ymin = 2147483647, ymax = -1;
+	int fd, seconds = 60;
+
+	if (argc == 2 && !strcmp(argv[1], "--describe")) {
+		puts("ARM64 nolibc touchscreen monitor: O_RDONLY, no grab, no writes, 60 seconds maximum.");
+		return 0;
+	}
+	if (argc == 2) {
+		seconds = atoi(argv[1]);
+		if (seconds < 1 || seconds > 60)
+			return 2;
+	}
+	fd = open("/dev/input/event3", O_RDONLY | O_NONBLOCK);
+	if (fd < 0) {
+		perror("open touchscreen");
+		return 1;
+	}
+	if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0 ||
+	    strcmp(name, "Synaptics S3330")) {
+		puts("Refusing device: expected Synaptics S3330");
+		close(fd);
+		return 2;
+	}
+	if (clock_gettime(CLOCK_MONOTONIC, &start))
+		return 1;
+	printf("READY name=%s seconds=%d event_size=%lu\n", name, seconds,
+	       (unsigned long)sizeof(struct input_event));
+	for (;;) {
+		ssize_t bytes;
+		int i;
+
+		if (clock_gettime(CLOCK_MONOTONIC, &now))
+			return 1;
+		if (now.tv_sec - start.tv_sec >= seconds)
+			break;
+		bytes = read(fd, events, sizeof(events));
+		if (bytes < 0) {
+			if (errno != EAGAIN && errno != EINTR) {
+				perror("read touchscreen");
+				return 1;
+			}
+			usleep(10000);
+			continue;
+		}
+		if (!bytes || bytes % sizeof(struct input_event)) {
+			puts("Unexpected event stream size");
+			return 1;
+		}
+		for (i = 0; i < bytes / sizeof(struct input_event); i++) {
+			struct input_event *event = &events[i];
+
+			total++;
+			if (event->type == EV_SYN && event->code == SYN_REPORT)
+				frames++;
+			if (event->type == EV_SYN && event->code == SYN_DROPPED)
+				dropped++;
+			if (event->type != EV_ABS)
+				continue;
+			if (event->code == ABS_MT_TRACKING_ID && event->value >= 0)
+				contacts++;
+			if (event->code == ABS_MT_POSITION_X) {
+				if (event->value < xmin) xmin = event->value;
+				if (event->value > xmax) xmax = event->value;
+			}
+			if (event->code == ABS_MT_POSITION_Y) {
+				if (event->value < ymin) ymin = event->value;
+				if (event->value > ymax) ymax = event->value;
+			}
+		}
+	}
+	close(fd);
+	printf("SUMMARY events=%lu frames=%lu contacts=%lu dropped=%lu x=%d..%d y=%d..%d\n",
+	       total, frames, contacts, dropped, xmin, xmax, ymin, ymax);
+	return total ? 0 : 3;
+}

@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Fixed paths for offline candidate tooling; contains no credentials."""
+import argparse
+from pathlib import Path
+
+
+def candidate(default="test01"):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--profile", choices=["test01", "test04", "test05", "test06"], default=default)
+    profile = parser.parse_args().profile
+    root = Path(__file__).resolve().parent.parent
+    recipe = root / ("build/recipe" if profile == "test01" else "build/recipe-" + profile)
+    return {
+        "profile": profile, "root": root,
+        "source": recipe / "src/linux-sdm845-7.1-rc1-r0",
+        "package": recipe / "pkg/linux-postmarketos-qcom-sdm845",
+        "release": "7.1.0-rc1-sdm845-polaris-" + profile,
+        "stage": root / ("build/initramfs-stage" if profile == "test01" else "build/initramfs-stage-" + profile),
+        "image": root / "images" / {"test01": "boot-test-01-lcd-candidate.img", "test04": "boot-test-04-usb-typec.img", "test05": "boot-test-05-usb-boost.img", "test06": "boot-test-06-usb-charge.img"}[profile],
+        "artifacts": root / "build/artifacts" / profile,
+    }

@@ -1,0 +1,42 @@
+#!/bin/sh
+# Promote the manually verified no-PD test06 configuration only for this kernel.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test06
+test "$(cat /sys/module/qcom_pmic_typec_smb2/parameters/source_otg_ready)" = Y
+test "$(cat /sys/class/usb_role/a600000.usb-role-switch/role)" = host
+grep -q '\[source\]' /sys/class/typec/port0/power_role
+cat > /etc/systemd/system/polaris-usb-role-test06.service <<'UNIT'
+[Unit]
+Description=Polaris test06 verified no-PD USB role controller
+ConditionKernelVersion=7.1.0-rc1-sdm845-polaris-test06
+Requires=polaris-charger-test05.service
+After=polaris-charger-test05.service
+Before=greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/modprobe qcom_usb_vbus_regulator
+ExecStart=/sbin/modprobe qcom_pmic_typec_smb2 source_otg_ready=1
+ExecStop=/sbin/rmmod qcom_pmic_typec_smb2
+RemainAfterExit=yes
+TimeoutStartSec=20s
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemd-analyze verify polaris-usb-role-test06.service polaris-charger-test05.service greetd.service
+systemctl enable --now polaris-usb-role-test06.service
+printf '\nVerified role service:\n'
+systemctl status polaris-usb-role-test06.service --no-pager -l | head -30
+printf '\nudev/initramfs blacklists remain; only explicit reviewed service loads the power controller:\n'
+cat /etc/modprobe.d/polaris-usb-test04.conf
+printf '\nCurrent host and hardware source readiness:\n'
+cat /sys/class/usb_role/a600000.usb-role-switch/role /sys/module/qcom_pmic_typec_smb2/parameters/source_otg_ready
+for d in /sys/class/regulator/regulator*; do
+ test -r "$d/name" || continue
+ test "$(cat "$d/name")" = polaris-usb-vbus || continue
+ cat "$d/state" "$d/status" "$d/microamps"
+done

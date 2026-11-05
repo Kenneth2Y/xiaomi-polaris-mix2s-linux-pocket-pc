@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""Prepare an isolated, signed SMB2 no-PD kernel; no device operations."""
+from pathlib import Path
+import difflib
+import hashlib
+import json
+import shutil
+
+root = Path(__file__).resolve().parent.parent
+recipe = root / "build/recipe-test04"
+kernel = recipe / "src/linux-sdm845-7.1-rc1-r0"
+baseline = root / "build/recipe/src/linux-sdm845-7.1-rc1-r0"
+reference = root / "references/qcom-pmic-typec-smb2"
+assert kernel.is_dir()
+changes = {}
+
+def change(relative, new):
+    path = kernel / relative
+    original = baseline / relative
+    old = original.read_text() if original.exists() else ""
+    changes[relative] = (old, new)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(new)
+
+for source in sorted((reference / "src").iterdir()):
+    text = source.read_text()
+    if source.suffix == ".h":
+        text = text.replace('// SPDX-License-Identifier: GPL-2.0\n', '/* SPDX-License-Identifier: GPL-2.0 */\n', 1)
+    if source.name == "qcom_pmic_typec_smb2_main.c":
+        needle = '\ttcpm->pd_disabled = pd_disabled;\n'
+        assert text.count(needle) == 1
+        text = text.replace(needle, needle + '''
+\t/* Initial polaris hardware test is strictly no-PD. */
+\tif (!pd_disabled) {
+\t\tret = dev_err_probe(dev, -EOPNOTSUPP,
+\t\t\t\t    "polaris test04 requires pd-disable\\n");
+\t\tgoto put_fwnode;
+\t}
+''')
+    change("drivers/usb/typec/polaris-smb2/" + source.name, text)
+change("drivers/usb/typec/polaris-smb2/Makefile", '''# SPDX-License-Identifier: GPL-2.0-only
+obj-$(CONFIG_TYPEC_QCOM_PMIC_SMB2) += qcom_pmic_typec_smb2.o
+qcom_pmic_typec_smb2-y := qcom_pmic_typec_smb2_main.o \\
+    qcom_pmic_typec_smb2_port.o qcom_pmic_typec_pdphy.o \\
+    qcom_pmic_typec_pdphy_stub.o
+''')
+p = kernel / "drivers/usb/typec/Makefile"
+change(str(p.relative_to(kernel)), (baseline / p.relative_to(kernel)).read_text() + '\nobj-$(CONFIG_TYPEC_QCOM_PMIC_SMB2) += polaris-smb2/\n')
+p = kernel / "drivers/usb/typec/Kconfig"
+text = (baseline / p.relative_to(kernel)).read_text()
+marker = 'if TYPEC\n'
+assert text.count(marker) == 1
+text = text.replace(marker, marker + '''
+config TYPEC_QCOM_PMIC_SMB2
+\ttristate "Qualcomm SMB2 Type-C controller (polaris lab)"
+\tdepends on OF && SPMI && MFD_SPMI_PMIC
+\tdepends on TYPEC_TCPM && CHARGER_QCOM_SMB2
+\tdepends on REGULATOR && POWER_SUPPLY
+\tselect USB_ROLE_SWITCH
+\thelp
+\t  Experimental SMB2 Type-C backend from Sam Day's standalone
+\t  qcom-pmic-typec-smb2 driver. Polaris test04 rejects PD-enabled
+\t  connectors. Keep the driver blacklisted until controlled testing.
+
+''')
+change(str(p.relative_to(kernel)), text)
+
+# PMI8998 has 250 mA steps, unlike PM8150B's 500 mA steps. Do not fake
+# another PMIC's compatible or silently misreport the physical current limit.
+p = kernel / "drivers/regulator/qcom_usb_vbus-regulator.c"
+text = (baseline / p.relative_to(kernel)).read_text().replace('#include <linux/of.h>\n', '#include <linux/of.h>\n#include <linux/property.h>\n#include <linux/slab.h>\n')
+text = text.replace('static struct regulator_desc qcom_usb_vbus_rdesc = {', '''static const unsigned int pmi8998_curr_table[] = {
+\t250000, 500000, 750000, 1000000, 1250000, 1500000,
+};
+
+static const struct regulator_desc qcom_usb_vbus_rdesc = {''')
+text = text.replace('\tstruct regulator_dev *rdev;\n', '\tstruct regulator_dev *rdev;\n\tstruct regulator_desc *rdesc;\n')
+needle = '\tinit_data = of_get_regulator_init_data(dev, dev->of_node,\n\t\t\t\t\t       &qcom_usb_vbus_rdesc);'
+assert needle in text
+text = text.replace(needle, '''\trdesc = devm_kmemdup(dev, &qcom_usb_vbus_rdesc, sizeof(*rdesc), GFP_KERNEL);
+\tif (!rdesc)
+\t\treturn -ENOMEM;
+\tif (device_is_compatible(dev, "qcom,pmi8998-vbus-reg")) {
+\t\trdesc->curr_table = pmi8998_curr_table;
+\t\trdesc->n_current_limits = ARRAY_SIZE(pmi8998_curr_table);
+\t}
+
+\tinit_data = of_get_regulator_init_data(dev, dev->of_node, rdesc);''')
+for field in ("enable_reg", "enable_mask", "csel_reg", "csel_mask"):
+    text = text.replace("qcom_usb_vbus_rdesc." + field, "rdesc->" + field)
+text = text.replace('devm_regulator_register(dev, &qcom_usb_vbus_rdesc, &config)', 'devm_regulator_register(dev, rdesc, &config)')
+text = text.replace('\t{ .compatible = "qcom,pm8150b-vbus-reg" },', '\t{ .compatible = "qcom,pm8150b-vbus-reg" },\n\t{ .compatible = "qcom,pmi8998-vbus-reg" },')
+text = text.replace('\tregmap_update_bits(regmap, base + OTG_CFG, OTG_EN_SRC_CFG, 0);', '\tret = regmap_update_bits(regmap, base + OTG_CFG, OTG_EN_SRC_CFG, 0);\n\tif (ret)\n\t\treturn ret;')
+change(str(p.relative_to(kernel)), text)
+
+# Respect the board's conservative battery charge limit instead of 1.95 A.
+# Clamp input current to a board-provided maximum on all APSD/TCPM paths.
+p = kernel / "drivers/power/supply/qcom_smbx.c"
+text = (baseline / p.relative_to(kernel)).read_text()
+needle = '\tstruct power_supply_battery_info *batt_info;'
+assert needle in text
+text = text.replace(needle, needle + '\n\tu32 input_current_limit_ua;')
+needle = '\tval_raw = val / CURRENT_SCALE_FACTOR;'
+assert text.count(needle) == 1
+text = text.replace(needle, '\tval = min(val, chip->input_current_limit_ua);\n' + needle)
+needle = '\tchip->name = pdev->name;\n'
+assert needle in text
+text = text.replace(needle, needle + '''
+\tchip->input_current_limit_ua = CURRENT_MAX_UA;
+\tdevice_property_read_u32(chip->dev, "input-current-limit-microamp",
+\t\t\t\t &chip->input_current_limit_ua);
+\tif (chip->input_current_limit_ua < 25000 ||
+\t    chip->input_current_limit_ua > CURRENT_MAX_UA)
+\t\treturn dev_err_probe(chip->dev, -EINVAL, "invalid input current cap\\n");
+''')
+needle = '\trc = regmap_write(chip->regmap, chip->base + FAST_CHARGE_CURRENT_CFG,\n\t\t\t  1950000 / CURRENT_SCALE_FACTOR);'
+assert text.count(needle) == 1
+text = text.replace(needle, '\trc = regmap_write(chip->regmap, chip->base + FAST_CHARGE_CURRENT_CFG,\n\t\t\t  min(1950000, chip->batt_info->constant_charge_current_max_ua) /\n\t\t\t  CURRENT_SCALE_FACTOR);')
+change(str(p.relative_to(kernel)), text)
+
+p = kernel / "arch/arm64/boot/dts/qcom/sdm845-xiaomi-polaris.dts"
+text = (baseline / p.relative_to(kernel)).read_text()
+text = text.replace('\tqcom,board-id = <0x2a 0x0>;\n', '''\tqcom,board-id = <0x2a 0x0>;
+
+\t/* OEM ATL/COS profiles: 4.4 V. Initial wired tests cap current to 0.5 A. */
+\tpolaris_battery: battery {
+\t\tcompatible = "simple-battery";
+\t\tvoltage-max-design-microvolt = <4400000>;
+\t\tconstant-charge-current-max-microamp = <500000>;
+\t};
+''')
+assert text.count('dr_mode = "peripheral";') == 1
+text = text.replace('dr_mode = "peripheral";', 'dr_mode = "otg";\n\tusb-role-switch;\n\trole-switch-default-mode = "peripheral";')
+text += '''
+/* Initial no-PD PMI8998 Type-C experiment. Drivers are manually loaded. */
+&pmi8998_lsid0 {
+\tpolaris_vbus: usb-vbus-regulator@1100 {
+\t\tcompatible = "qcom,pmi8998-vbus-reg";
+\t\treg = <0x1100>;
+\t\tregulator-name = "polaris-usb-vbus";
+\t\tregulator-min-microamp = <500000>;
+\t\tregulator-max-microamp = <500000>;
+\t};
+
+\tpolaris_typec: typec@1300 {
+\t\tcompatible = "qcom,pmi8998-typec";
+\t\treg = <0x1300>, <0x1700>;
+\t\tinterrupts = <0x2 0x13 0x7 IRQ_TYPE_EDGE_RISING>,
+\t\t\t     <0x2 0x17 0x0 IRQ_TYPE_EDGE_RISING>,
+\t\t\t     <0x2 0x17 0x1 IRQ_TYPE_EDGE_RISING>,
+\t\t\t     <0x2 0x17 0x2 IRQ_TYPE_EDGE_RISING>,
+\t\t\t     <0x2 0x17 0x3 IRQ_TYPE_EDGE_RISING>,
+\t\t\t     <0x2 0x17 0x4 IRQ_TYPE_EDGE_RISING>,
+\t\t\t     <0x2 0x17 0x5 IRQ_TYPE_EDGE_RISING>,
+\t\t\t     <0x2 0x17 0x6 IRQ_TYPE_EDGE_RISING>;
+\t\tinterrupt-names = "type-c-change", "sig-tx", "sig-rx", "msg-tx",
+\t\t\t\t  "msg-rx", "msg-tx-failed", "msg-tx-discarded",
+\t\t\t\t  "msg-rx-discarded";
+\t\tcharger-power-supply = <&pmi8998_charger>;
+\t\tvdd-vbus-supply = <&polaris_vbus>;
+\t\tvdd-pdphy-supply = <&vreg_l24a_3p075>;
+
+\t\tconnector {
+\t\t\tcompatible = "usb-c-connector";
+\t\t\tlabel = "USB-C";
+\t\t\tpower-role = "dual";
+\t\t\tdata-role = "dual";
+\t\t\ttry-power-role = "sink";
+\t\t\tvbus-supply = <&polaris_vbus>;
+\t\t\ttypec-power-opmode = "default";
+\t\t\tpd-disable;
+
+\t\t\tport {
+\t\t\t\tpolaris_typec_hs: endpoint {
+\t\t\t\t\tremote-endpoint = <&usb_1_dwc3_hs>;
+\t\t\t\t};
+\t\t\t};
+\t\t};
+\t};
+};
+
+&usb_1_dwc3_hs {
+\tremote-endpoint = <&polaris_typec_hs>;
+};
+
+&pmi8998_charger {
+\tmonitored-battery = <&polaris_battery>;
+\tinput-current-limit-microamp = <500000>;
+\tstatus = "okay";
+};
+
+&pmi8998_fg {
+\tstatus = "okay";
+};
+'''
+change(str(p.relative_to(kernel)), text)
+
+# Extend the target's bindings alongside the experimental implementation.
+change("Documentation/devicetree/bindings/usb/qcom,pmic-typec.yaml",
+       (reference / "qcom,pmic-typec.yaml").read_text())
+p = kernel / "Documentation/devicetree/bindings/regulator/qcom,usb-vbus-regulator.yaml"
+text = (baseline / p.relative_to(kernel)).read_text().replace(
+    '          - qcom,pm8150b-vbus-reg\n',
+    '          - qcom,pm8150b-vbus-reg\n          - qcom,pmi8998-vbus-reg\n', 1)
+change(str(p.relative_to(kernel)), text)
+p = kernel / "Documentation/devicetree/bindings/power/supply/qcom,pmi8998-charger.yaml"
+text = (baseline / p.relative_to(kernel)).read_text().replace('  monitored-battery: true\n', '''  monitored-battery: true
+
+  input-current-limit-microamp:
+    description: Upper bound applied to APSD and Type-C input-current requests.
+    minimum: 25000
+    maximum: 1500000
+''')
+change(str(p.relative_to(kernel)), text)
+
+# Generate a reproducible patch against the already-prepared test02 tree.
+patch = '''From: Polaris Lab <polaris@localhost>
+Subject: [PATCH] usb: add a controlled polaris SMB2 no-PD test profile
+
+Import Sam Day's standalone SMB2 Type-C sources, retaining their license.
+Upstream revision: 4164801fa70216a8687cdfdc57026df740926a14.
+The reference has not been tested on phones.
+This is an experimental profile.
+Reject PD-enabled connectors, use a correct PMI8998 250 mA current table,
+limit source and sink current to 500 mA, and honor the battery charge cap.
+Keep the new power/Type-C modules blacklisted for controlled testing.
+OEM battery profiles provide the 4.4 V maximum; do not increase it.
+
+Signed-off-by: Polaris Lab <polaris@localhost>
+---
+'''
+binding_patch = '''From: Polaris Lab <polaris@localhost>
+Subject: [PATCH] dt-bindings: describe the experimental polaris SMB2 profile
+
+Adapt Sam Day's SMB2 Type-C schema to this target tree and describe the
+PMI8998 VBUS compatible and optional charger input-current cap.
+
+Signed-off-by: Polaris Lab <polaris@localhost>
+---
+'''
+for rel, (old, new) in changes.items():
+    diff = "diff --git a/" + rel + " b/" + rel + "\n"
+    diff += "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True),
+                    fromfile="a/" + rel if old else "/dev/null", tofile="b/" + rel))
+    if rel.startswith("Documentation/"):
+        binding_patch += diff
+    else:
+        patch += diff
+patch_path = root / "patches/0007-polaris-smb2-nopd-test04.patch"
+patch_path.write_text(patch)
+shutil.copyfile(patch_path, recipe / patch_path.name)
+binding_path = root / "patches/0008-polaris-smb2-test04-bindings.patch"
+binding_path.write_text(binding_patch)
+shutil.copyfile(binding_path, recipe / binding_path.name)
+config = recipe / "config-postmarketos-qcom-sdm845.aarch64"
+text = (root / "build/recipe" / config.name).read_text().replace('CONFIG_LOCALVERSION="-sdm845-polaris-test01"', 'CONFIG_LOCALVERSION="-sdm845-polaris-test04"')
+text += '\nCONFIG_TYPEC_QCOM_PMIC_SMB2=m\n'
+config.write_text(text)
+shutil.copyfile(config, kernel / ".config")
+apk = recipe / "APKBUILD"
+text = (root / "build/recipe/APKBUILD").read_text().replace('\t0005-polaris-ath10k-host-cap-skip.patch\n', '\t0005-polaris-ath10k-host-cap-skip.patch\n\t0007-polaris-smb2-nopd-test04.patch\n\t0008-polaris-smb2-test04-bindings.patch\n')
+text = text.replace("pkgrel=5\n", "pkgrel=7\n")
+lines = text.splitlines(True)
+for i, line in enumerate(lines):
+    if line.endswith('  config-postmarketos-qcom-sdm845.aarch64\n'):
+        lines[i] = hashlib.sha512(config.read_bytes()).hexdigest() + '  config-postmarketos-qcom-sdm845.aarch64\n'
+text = ''.join(lines)
+assert text.endswith('"\n')
+text = text[:-2] + hashlib.sha512(patch_path.read_bytes()).hexdigest() + '  ' + patch_path.name + '\n' + hashlib.sha512(binding_path.read_bytes()).hexdigest() + '  ' + binding_path.name + '\n"\n'
+apk.write_text(text)
+provenance = {"upstream_repository": "https://github.com/samcday/qcom-pmic-typec-smb2",
+              "upstream_commit": "4164801fa70216a8687cdfdc57026df740926a14",
+              "upstream_hardware_status": "not tested on phones; static/build evidence only",
+              "battery_reference": "MiCode/Xiaomi_Kernel_OpenSource polaris-o-oss batterydata-d5-{atl,cos}-3400mAh.dtsi: max-voltage-uv=4400000",
+              "policy": "PD rejected; source/sink 500mA; manual module loading first",
+              "patch_sha256": hashlib.sha256(patch_path.read_bytes()).hexdigest(),
+              "binding_patch_sha256": hashlib.sha256(binding_path.read_bytes()).hexdigest(),
+              "modified_files": list(changes)}
+(root / "logs/test04-source-provenance.json").write_text(json.dumps(provenance,indent=2)+'\n')
+print(json.dumps(provenance,indent=2))

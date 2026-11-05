@@ -1,0 +1,49 @@
+#!/bin/sh
+# Read-only USB/power audit; no role, regulator, PMIC-register or gadget writes.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+printf 'USB/power kernel messages:\n'
+dmesg | grep -Ei 'dwc3|a600000|a6f8800|xhci|usb [0-9]|qusb|type.?c|pmi8998|smb2|charger|vbus' || true
+printf '\nController/role classes:\n'
+for class in usb_role typec power_supply udc; do
+    ls -l "/sys/class/$class"
+done
+printf '\nUSB bus devices:\n'
+ls -l /sys/bus/usb/devices
+printf '\nDWC3 debug interface:\n'
+if test -d /sys/kernel/debug/usb; then
+    find /sys/kernel/debug/usb -maxdepth 2 -name mode -o -name link_state
+    for f in /sys/kernel/debug/usb/*/mode; do
+        test -r "$f" || continue
+        printf '%s: ' "$f"; cat "$f" || true
+    done
+fi
+printf '\nRelevant bound platform drivers:\n'
+for p in /sys/bus/platform/devices/*usb* /sys/bus/platform/devices/*dwc3* /sys/bus/platform/devices/*charger* /sys/bus/platform/devices/*typec*; do
+    test -d "$p" || continue
+    printf '%s: ' "${p##*/}"; readlink "$p/driver" || true
+done
+printf '\nSPMI device identities:\n'
+for p in /sys/bus/spmi/devices/*; do
+    test -d "$p" || continue
+    printf '%s ' "${p##*/}"; cat "$p/modalias" 2>/dev/null || true
+done
+printf '\nRegulator VBUS names:\n'
+for p in /sys/class/regulator/regulator*; do
+    test -r "$p/name" || continue
+    name=$(cat "$p/name")
+    case "$name" in *vbus*|*usb*|*otg*|*smb*) printf '%s %s\n' "${p##*/}" "$name";; esac
+done
+printf '\nInput device names:\n'
+for p in /sys/class/input/event*/device/name; do printf '%s: ' "$p"; cat "$p"; done
+printf '\nDeferred devices:\n'
+cat /sys/kernel/debug/devices_deferred 2>/dev/null || true
+printf '\nKernel lockdown state:\n'
+cat /sys/kernel/security/lockdown 2>/dev/null || true
+printf '\nRuntime PM state:\n'
+for d in /sys/bus/platform/devices/a600000.usb /sys/bus/platform/devices/a6f8800.usb; do
+    printf '%s\n' "$d"
+    for f in runtime_status runtime_error control; do
+        test ! -r "$d/power/$f" || { printf '%s: ' "$f"; cat "$d/power/$f"; }
+    done
+done

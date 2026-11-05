@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Forward the isolated test04 recipe with PMI8998 startup/status diagnostics."""
+from pathlib import Path
+import difflib
+import hashlib
+import json
+import shutil
+
+root = Path(__file__).resolve().parent.parent
+old_recipe = root / "build/recipe-test04"
+recipe = root / "build/recipe-test05"
+old_kernel = old_recipe / "src/linux-sdm845-7.1-rc1-r0"
+kernel = recipe / "src/linux-sdm845-7.1-rc1-r0"
+changes = {}
+
+def put(rel, value):
+    original = (old_kernel / rel).read_text()
+    changes[rel] = (original, value)
+    (kernel / rel).write_text(value)
+
+rel = "drivers/regulator/qcom_usb_vbus-regulator.c"
+text = (old_kernel / rel).read_text()
+text = text.replace('#include <linux/module.h>\n', '#include <linux/module.h>\n#include <linux/iopoll.h>\n')
+needle = 'static const unsigned int pmi8998_curr_table[] = {'
+assert text.count(needle) == 1
+text = text.replace(needle, (root / "tools/pmi8998-vbus-ops.fragment").read_text() + '\n' + needle)
+text = text.replace('\tstruct regulator_desc *rdesc;\n', '\tstruct regulator_desc *rdesc;\n\tstruct pmi8998_vbus *vbus;\n')
+needle = '\t\trdesc->curr_table = pmi8998_curr_table;'
+assert text.count(needle) == 1
+text = text.replace(needle, '''\t\tvbus = devm_kzalloc(dev, sizeof(*vbus), GFP_KERNEL);
+\t\tif (!vbus)
+\t\t\treturn -ENOMEM;
+\t\tvbus->regmap = regmap;
+\t\tvbus->dev = dev;
+\t\tvbus->base = base;
+\t\tconfig.driver_data = vbus;
+\t\trdesc->ops = &pmi8998_vbus_ops;
+''' + needle)
+put(rel, text)
+
+rel = "drivers/usb/typec/polaris-smb2/qcom_pmic_typec_smb2_port.c"
+text = (old_kernel / rel).read_text()
+text = text.replace('#include <linux/mutex.h>\n', '#include <linux/mutex.h>\n#include <linux/module.h>\n#include <linux/property.h>\n')
+needle = 'struct smb2_saved_reg {'
+text = text.replace(needle, '''/* Default keeps the original detector; alternate mode still verifies
+ * real PMI8998 boost status through the provider's is_enabled operation.
+ */
+static bool source_otg_ready;
+module_param(source_otg_ready, bool, 0444);
+MODULE_PARM_DESC(source_otg_ready, "Use verified PMI8998 boost status while sourcing");
+
+''' + needle)
+text = text.replace('\tbool vbus_high;\n\tbool vbus_error_active;', '\tbool vbus_high;\n\tbool source_start_failed;\n\tbool vbus_error_active;')
+# Apply source-aware sensing to both the IRQ reconciliation and polling path.
+needle = '\tvbus_high = !!(status4 & SMB2_TYPEC_VBUS_STATUS_BIT);'
+assert text.count(needle) == 1
+text = text.replace(needle, needle + '''
+\tif (source_otg_ready && port->vbus_enabled &&
+\t    device_is_compatible(port->dev, "qcom,pmi8998-typec")) {
+\t\tret = regulator_is_enabled(port->vbus);
+\t\tif (ret < 0)
+\t\t\tgoto unlock;
+\t\tvbus_high = ret > 0;
+\t}
+''')
+needle = '\n\tport->vbus_high = !!(status4 & SMB2_TYPEC_VBUS_STATUS_BIT);'
+assert text.count(needle) == 1
+text = text.replace(needle, needle + '''
+\tif (source_otg_ready && port->vbus_enabled &&
+\t    device_is_compatible(port->dev, "qcom,pmi8998-typec")) {
+\t\tret = regulator_is_enabled(port->vbus);
+\t\tif (ret < 0)
+\t\t\treturn ret;
+\t\tport->vbus_high = ret > 0;
+\t}
+''')
+start = text.index('static int smb2_vbus_wait_locked(')
+end = text.index('\n}\n', start) + 3
+text = text[:start] + '''static int smb2_vbus_wait_locked(struct pmic_typec_port *port, bool high,
+\t\t\t\t  bool *changed)
+{
+\tbool was_high = port->vbus_high;
+\tint sampled, ret;
+
+\tret = read_poll_timeout(smb2_vbus_detect_locked, sampled,
+\t\t\t\tsampled < 0 || !!sampled == high,
+\t\t\t\tSMB2_VBUS_POLL_US, SMB2_VBUS_SETTLE_TIMEOUT_US,
+\t\t\t\tfalse, port, NULL, NULL);
+\tif (!ret && sampled < 0)
+\t\tret = sampled;
+\tif (changed)
+\t\t*changed = was_high != port->vbus_high;
+\treturn ret;
+}
+''' + text[end:]
+needle = '\tif (on) {\n\t\tsensed = smb2_vbus_detect_locked'
+assert text.count(needle) == 1
+text = text.replace(needle, '''\tif (on && port->source_start_failed) {
+\t\tret = -EIO;
+\t\tgoto unlock;
+\t}
+
+''' + needle)
+# The first failed start is latched until module reload; no repeated pulses.
+needle = '\tdev_dbg(port->dev, "set_vbus: %s (%d)\\n", str_on_off(on), ret);'
+assert text.count(needle) == 1
+text = text.replace(needle, '''\tif (on && ret) {
+\t\tmutex_lock(&port->lock);
+\t\tport->source_start_failed = true;
+\t\tmutex_unlock(&port->lock);
+\t}
+''' + needle)
+put(rel, text)
+
+patch = '''From: Polaris Lab <polaris@localhost>
+Subject: [PATCH] regulator: implement PMI8998 boost startup and verified status
+
+Follow the MiCode polaris-o-oss SMB2 1-in-8 halt/OTG enable order and restore
+the previous protected bit on disable. Verify OTG soft-start and fault status,
+keeping the existing 500 mA limit and rejecting repeated failed starts.
+Expose a load-time test switch for source-aware sensing based on real OTG
+ready state rather than merely the enable command. The default remains the
+original Type-C detector. Never bypass the regulator's hardware checks.
+
+Signed-off-by: Polaris Lab <polaris@localhost>
+---
+'''
+for rel, (before, after) in changes.items():
+    patch += "diff --git a/" + rel + " b/" + rel + "\n"
+    patch += ''.join(difflib.unified_diff(before.splitlines(True),after.splitlines(True),fromfile='a/'+rel,tofile='b/'+rel))
+name = "0009-polaris-pmi8998-boost-start-test05.patch"
+(root / "patches" / name).write_text(patch)
+(recipe / name).write_text(patch)
+config = recipe / "config-postmarketos-qcom-sdm845.aarch64"
+text = (old_recipe / config.name).read_text().replace('polaris-test04"', 'polaris-test05"')
+config.write_text(text)
+shutil.copyfile(config, kernel / ".config")
+text = (old_recipe / "APKBUILD").read_text().replace('pkgrel=7\n','pkgrel=9\n')
+text = text.replace('\t0008-polaris-smb2-test04-bindings.patch\n','\t0008-polaris-smb2-test04-bindings.patch\n\t'+name+'\n')
+lines=text.splitlines(True)
+for i,line in enumerate(lines):
+    if line.endswith('  '+config.name+'\n'):
+        lines[i]=hashlib.sha512(config.read_bytes()).hexdigest()+'  '+config.name+'\n'
+text=''.join(lines)
+assert text.endswith('"\n')
+text=text[:-2]+hashlib.sha512(patch.encode()).hexdigest()+'  '+name+'\n"\n'
+(recipe / "APKBUILD").write_text(text)
+print('Prepared isolated test05; no PD/current-limit changes, no device actions.')

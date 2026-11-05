@@ -1,0 +1,22 @@
+#!/bin/sh
+# Prepare reversible official HTTPS repositories and inspect, do not install yet.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+stage=/var/lib/polaris-lab/gui-20261104
+install -d -m 700 "$stage"
+for f in /etc/apk/repositories /etc/apk/world /usr/lib/apk/db/installed; do
+ name=${f##*/}
+ test -e "$stage/$name.before" || cp -p "$f" "$stage/$name.before"
+done
+printf 'Updating only official mirror schemes/renamed domain, preserving repository order.\n'
+sed -e 's|http://mirror.postmarketos.org/|https://mirror.nura.eco/|' \
+    -e 's|http://cdn.alpinelinux.org/|https://cdn.alpinelinux.org/|' \
+    /etc/apk/repositories > "$stage/repositories.https"
+cat "$stage/repositories.https"
+cp "$stage/repositories.https" /etc/apk/repositories
+printf '\nRefresh signed package indexes:\n'
+timeout 180 apk --timeout 20 update
+printf '\nGraphical package candidates:\n'
+apk --no-network policy phosh phoc phosh-osk-stub phosh-osk-stevia foot greetd-phrog mesa-demos mesa-utils
+printf '\nInstallation simulation only:\n'
+apk --no-network add --simulate phosh phosh-osk-stub foot greetd-phrog mesa-demos

@@ -1,0 +1,30 @@
+#!/bin/sh
+# Short, automatically stopped attach attempt using the signed driver's logs.
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test05
+test ! -d /sys/module/qcom_pmic_typec_smb2
+modprobe qcom_smbx
+modprobe qcom_usb_vbus_regulator
+sleep 2
+test "$(cat /sys/class/power_supply/pmi8998-charger/voltage_now)" -lt 1000000
+test "$(cat /sys/class/power_supply/qcom-battery/temp)" -lt 450
+systemd-run --collect --unit=polaris-typec-test05-first-stop --on-active=25s \
+    /sbin/modprobe -r qcom_pmic_typec_smb2
+trap 'modprobe -r qcom_pmic_typec_smb2 || true; systemctl stop polaris-typec-test05-first-stop.timer || true' EXIT
+printf 'Starting bounded signed-driver debug attempt; maximum 25 seconds.\n'
+modprobe qcom_pmic_typec_smb2 dyndbg=+p
+sleep 12
+printf '\nTCPM state-machine trace:\n'
+for f in /sys/kernel/debug/usb/tcpm-*/log; do
+    test ! -r "$f" || tail -100 "$f"
+done
+printf '\nDriver CC and VBUS messages:\n'
+dmesg | grep -E 'PMI8998 boost|qcom-pmic-typec-smb2|tcpm.*(error|failed)|usb [0-9]' | tail -125
+printf '\nVBUS state at end of attempt:\n'
+for d in /sys/class/regulator/regulator*; do
+    test -r "$d/name" || continue
+    test "$(cat "$d/name")" = polaris-usb-vbus || continue
+    cat "$d/state"
+done
+printf '\nStopping this attempt.\n'

@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.patch text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+# 邮件补丁的上下文行和历史文本保留原始空格
+*.patch whitespace=-blank-at-eol
+archive/legacy-tools/*.txt whitespace=-blank-at-eol

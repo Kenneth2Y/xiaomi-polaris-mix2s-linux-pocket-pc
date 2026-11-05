@@ -1,0 +1,28 @@
+From: Polaris Lab <polaris@localhost>
+Subject: [PATCH] power: supply: pmi8998_fg: fix fallback current sign
+
+pmi8998_fg_get_current() converts the PMIC current to the power supply
+convention where charging is positive. The status fallback still treats
+negative current as charging, reversing the displayed state when no
+charger supply reference is available. Compare the converted current
+using the same convention. Leave the exported current and charger
+status path unchanged.
+
+Signed-off-by: Polaris Lab <polaris@localhost>
+---
+diff --git a/drivers/power/supply/pmi8998_fg.c b/drivers/power/supply/pmi8998_fg.c
+--- a/drivers/power/supply/pmi8998_fg.c
++++ b/drivers/power/supply/pmi8998_fg.c
+@@ -344,9 +344,10 @@
+ 				val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
+ 				break;
+ 			}
+-			if (temp < 0)
++			/* get_current() already converts to positive charging current. */
++			if (temp > 0)
+ 				val->intval = POWER_SUPPLY_STATUS_CHARGING;
+-			else if (temp > 0)
++			else if (temp < 0)
+ 				val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+ 			else
+ 				val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;

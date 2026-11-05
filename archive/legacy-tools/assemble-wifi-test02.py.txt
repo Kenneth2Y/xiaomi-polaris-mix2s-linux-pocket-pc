@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Change only the appended DTB of the known-working test01 boot image."""
+from pathlib import Path
+import difflib
+import hashlib
+import json
+from bootimg import BootImage
+
+root = Path(__file__).resolve().parent.parent
+old_dts = (root / "logs/test01-device-tree-for-wifi.dts").read_text().splitlines(True)
+new_dts = (root / "logs/test02-device-tree.dts").read_text().splitlines(True)
+changes = list(difflib.unified_diff(old_dts, new_dts, fromfile="test01", tofile="test02"))
+content_changes = [line for line in changes if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
+if content_changes != ["+\t\t\tqcom,snoc-host-cap-skip-quirk;\n"]:
+    raise SystemExit("Unexpected DTB differences; refusing image assembly:\n" + "".join(changes))
+(root / "logs/test02-dtb-difference.patch").write_text("".join(changes))
+original = (root / "images/boot-test-01-lcd-candidate.img").read_bytes()
+if hashlib.sha256(original).hexdigest() != "68093f62b6aa40abfa5fdd3704d6ab33c97b31ae92993118d1f5ba51b427fd46":
+    raise SystemExit("Working baseline hash mismatch")
+image = BootImage.parse(original)
+kernel, old_dtb = image.kernel_and_dtb()
+new_dtb = (root / "build/artifacts/test02/sdm845-xiaomi-polaris.dtb").read_bytes()
+image.kernel = kernel + new_dtb
+result = image.encode()
+verified = BootImage.parse(result)
+if verified.kernel_and_dtb() != (kernel, new_dtb) or verified.ramdisk != BootImage.parse(original).ramdisk:
+    raise SystemExit("Kernel/initramfs preservation check failed")
+if len(result) > 67108864:
+    raise SystemExit("Image exceeds boot partition")
+output = root / "images/boot-test-02-wifi.img"
+with output.open("xb") as handle:
+    handle.write(result)
+manifest = {"image": output.name, "sha256": hashlib.sha256(result).hexdigest(), "bytes": len(result),
+            "kernel_release": "7.1.0-rc1-sdm845-polaris-test01", "kernel_unchanged": True,
+            "initramfs_unchanged": True, "rootfs_modules_unchanged": True,
+            "kernel_gzip_sha256": hashlib.sha256(kernel).hexdigest(),
+            "dtb_sha256": hashlib.sha256(new_dtb).hexdigest(),
+            "ramdisk_sha256": hashlib.sha256(image.ramdisk).hexdigest(),
+            "change": "wifi node: qcom,snoc-host-cap-skip-quirk",
+            "patch": "0005-polaris-ath10k-host-cap-skip.patch", "status": "OFFLINE_VERIFIED_NOT_BOOT_TESTED"}
+with output.with_suffix(".json").open("x") as handle:
+    json.dump(manifest, handle, indent=2)
+    handle.write("\n")
+print(json.dumps(manifest, indent=2))

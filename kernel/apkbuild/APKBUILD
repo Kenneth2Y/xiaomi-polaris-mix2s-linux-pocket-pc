@@ -1,0 +1,117 @@
+# Co-Maintainer: Joel Selvaraj <foss@joelselvaraj.com>
+# Stable Linux kernel with patches for SDM845 devices
+# Kernel config based on: arch/arm64/configs/defconfig and sdm845.config
+maintainer="Casey Connolly <kcxt@postmarketos.org>"
+_flavor="postmarketos-qcom-sdm845"
+pkgname=linux-$_flavor
+pkgver=7.1_rc1
+pkgrel=10
+pkgdesc="Mainline Kernel fork for SDM845 devices"
+arch="aarch64"
+_carch="arm64"
+url="https://gitlab.com/sdm845-mainline/linux"
+license="GPL-2.0-only"
+options="
+	!check
+	!strip
+	!tracedeps
+	pmb:cross-native
+	pmb:kconfigcheck-community
+	pmb:kconfigcheck-lockdown
+"
+makedepends="
+	bison
+	clang
+	elfutils-dev
+	findutils
+	flex
+	linux-headers
+	lld
+	llvm
+	openssl-dev
+	pahole
+	perl
+	postmarketos-installkernel
+	python3
+	zstd
+"
+
+_tag="sdm845-7.1-rc1-r0"
+
+# Source
+source="
+	linux-$_tag.tar.gz::https://gitlab.com/sdm845-mainline/linux/-/archive/$_tag/linux-$_tag.tar.gz
+	config-postmarketos-qcom-sdm845.aarch64
+	libbpf-Fix-UAF-in-strset__add_str.patch
+	enable-dynamic-ftrace.patch
+	0002-10nm-pll-diagnostics.patch
+	0004-nt35596s-prepare-prev-first.patch
+	0005-polaris-ath10k-host-cap-skip.patch
+	0007-polaris-smb2-nopd-test04.patch
+	0008-polaris-smb2-test04-bindings.patch
+	0009-polaris-pmi8998-boost-start-test05.patch
+	0010-pmi8998-fg-fallback-current-sign.patch
+	0011-polaris-smb2-default-sink-current.patch
+	0012-polaris-bounded-dcp-charge-test06.patch
+"
+builddir="$srcdir/linux-$_tag"
+
+prepare() {
+	default_prepare
+	cp "$srcdir/config-$_flavor.$CARCH" .config
+}
+
+build() {
+	unset LDFLAGS
+	make ARCH="$_carch" LLVM=1 \
+		KBUILD_BUILD_VERSION="$((pkgrel + 1 ))-$_flavor"
+}
+
+package() {
+	if [ -e "$builddir/arch/$_carch/boot/vmlinuz.efi" ]; then
+		# ZBOOT EFI decompressor for EFI booting
+		install -Dm644 "$builddir/arch/$_carch/boot/vmlinuz.efi" \
+			"$pkgdir/boot/linux.efi"
+
+		# Old GZIP'd kernel image for boot.img compatibility
+		install -Dm644 "$builddir/arch/$_carch/boot/vmlinuz" \
+			"$pkgdir/boot/vmlinuz"
+	else
+		echo "WARNING: CONFIG_ZBOOT not enabled!"
+		install -Dm644 "$builddir/arch/$_carch/boot/Image.gz" \
+			"$pkgdir/boot/vmlinuz"
+	fi
+
+	make modules_install dtbs_install \
+		ARCH="$_carch" \
+		LLVM=1 \
+		INSTALL_PATH="$pkgdir"/boot/ \
+		INSTALL_MOD_PATH="$pkgdir"/usr/ \
+		INSTALL_MOD_STRIP=1 \
+		INSTALL_DTBS_PATH="$pkgdir"/boot/dtbs-tmp
+
+	mkdir -p "$pkgdir"/boot/dtbs/qcom
+	cp -r "$pkgdir"/boot/dtbs-tmp/qcom/sdm8* "$pkgdir"/boot/dtbs/qcom
+	rm -rf "$pkgdir"/boot/dtbs-tmp
+
+	rm -f "$pkgdir"/usr/lib/modules/*/build "$pkgdir"/usr/lib/modules/*/source
+
+	install -D "$builddir"/include/config/kernel.release \
+		"$pkgdir"/usr/share/kernel/$_flavor/kernel.release
+}
+
+sha512sums="
+94da173aaf74dd33ef8ff9015e92759481cd0da5bd8a1e52c8664fd372d48a1155655001ad2e9d26557733c71ae8bc448e4ebdf1372b8f32159907a35f0306a9  linux-sdm845-7.1-rc1-r0.tar.gz
+9b2d87b78ce172450c533041ca59f6c6d63e7a13495f95338597ba6559a723bfaefdd3b94535e15b706c8360e52a27c46afa6e1391fc733b3d7a7f6aee825591  config-postmarketos-qcom-sdm845.aarch64
+e2555390d48cbbdc32a7d3f0c27599ff88f2fe3e786d1d0086caaa5b092cc3edcb6e95e2fb07034edb3793f6dc954da0662c723202eb7e2c4956c99b50919b12  libbpf-Fix-UAF-in-strset__add_str.patch
+e8b595f3e076896dc38f249c8908d58e2e6a858eaa77fe1e680f27db0e76d3d74c0b5dfebb7a4c57d546fee0b0f6eb81a38b20dfd72f985c9d02f28d79a5eceb  enable-dynamic-ftrace.patch
+88e8d6848ef1a0adf4956aba81a41793f5d05a8bcbd5a23bfc321493ba44044deb40d5b0c7f7def9ac6ff939362ae16a351d5b79793eae7b904cf975b48f781a  0002-10nm-pll-diagnostics.patch
+d7c857500348a1420ccd1a255c667704e54ee88f5c563bcb92885aaa5a9b5dc5a87d12ab782822de523d01c63b277ff60b57cc5307a0663bf42ad7b69da3d1c5  0004-nt35596s-prepare-prev-first.patch
+e0ae8b9da09cd2552244cfbcd6a63272c766d082306573a679497ab0bd30a44dfa0023503a7628b7ea87238a62da13704de5e2a57952310c7866b770e5c474ad  0005-polaris-ath10k-host-cap-skip.patch
+b7f3bc2f6855ccabec2af6bdd6115c29005a86c68a3a0078b7ca6c732a08e88d2089dd25082af889e03391c89cb2e1985e8d8c85e5ae6dc3e1541fd2b06fbf7d  0007-polaris-smb2-nopd-test04.patch
+cf5ddc6e8881785ca8f3bff492772bf35d5fb889a2ce3a56bb753ab995522dec4b66430875cfcc532a950b1238d3bb42a10e14883ac30fcec65adfd19c118900  0008-polaris-smb2-test04-bindings.patch
+7b962167cf55db9709edd1137d4cf3ef934b56786ba14191f110ceaa39534f6a523156390900b7beda608e26c33e9edd2d224d69b696be1d4c2a73f588264baf  0009-polaris-pmi8998-boost-start-test05.patch
+acce7aba5b1ea319a58f8e93a178fd8d9121a2f0ad219899a2a5bd8f0934f8795723f64adb1cff582fd18666a50a8c88e3fbf019fbaac6658ea7d83a285b7c39  0010-pmi8998-fg-fallback-current-sign.patch
+e6b8f8677b3b89146d9efb55cfbaeab774f5aafa54015f67a5d61c317a1cdf9d8f150f37bbbf6339d89999db6e8706f9d92daee4a0e191b46f324aa50000911a  0011-polaris-smb2-default-sink-current.patch
+6d6ad06b60977af84c70325be2416a5fb069c130978540b096b02d22cecd6fbfa91045e884d9ea5e91bc0a0b365f9d9a15a90cb32ed9cbf3e8a90ae3b18bb28f  0012-polaris-bounded-dcp-charge-test06.patch
+"

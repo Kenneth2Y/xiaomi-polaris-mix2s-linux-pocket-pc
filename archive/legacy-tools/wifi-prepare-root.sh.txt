@@ -1,0 +1,33 @@
+#!/bin/sh
+# Public connection settings only. Wi-Fi secrets must remain interactive/not-saved.
+set -eu
+test -e /sys/firmware/devicetree/base/soc@0/wifi@18800000/qcom,snoc-host-cap-skip-quirk
+test -d /sys/class/net/wlan0
+dev=$(readlink -f /dev/disk/by-partlabel/boot)
+test -b "$dev"
+actual=$(head -c 29515776 "$dev" | sha256sum)
+test "${actual%% *}" = 6f01281de6087dea502462f373b67daedc0a33403cd41c451753736b25de8922
+printf 'Actual boot prefix SHA-256: %s\n' "${actual%% *}"
+for ssid in <5GHz热点> <2.4GHz热点>; do
+    profile=polaris-$ssid
+    if nmcli -g connection.id connection show "$profile" >/dev/null 2>&1; then
+        test "$(nmcli -g 802-11-wireless.ssid connection show "$profile")" = "$ssid"
+        test "$(nmcli -g connection.type connection show "$profile")" = 802-11-wireless
+    else
+        nmcli connection add type wifi ifname wlan0 con-name "$profile" ssid "$ssid" \
+            connection.autoconnect no ipv4.method auto ipv6.method auto \
+            802-11-wireless-security.key-mgmt wpa-psk \
+            802-11-wireless-security.psk-flags 2
+    fi
+    # Do not clear or change an existing password: reject any unsafe profile.
+    flags=$(nmcli -g 802-11-wireless-security.psk-flags connection show "$profile")
+    case "$flags" in 2|"2 (not saved)"|"2 (not-saved)") ;; *) echo 'Unsafe PSK flags'; exit 1;; esac
+    test "$(nmcli -g connection.autoconnect connection show "$profile")" = no
+    nmcli -f connection.id,connection.uuid,connection.autoconnect,802-11-wireless.ssid,802-11-wireless-security.key-mgmt,802-11-wireless-security.psk-flags connection show "$profile"
+done
+printf '\nBoot/display status:\n'
+systemctl is-active systemd-vconsole-setup.service
+printf '\nDriver status:\n'
+dmesg | grep -E 'ath10k|wlan0|host capability|DCS|hw init failed' || true
+printf '\nRequested access points:\n'
+nmcli -t -f SSID,FREQ,SIGNAL,SECURITY device wifi list --rescan yes | grep '^PWM_'

@@ -1,0 +1,18 @@
+[Unit]
+Description=Polaris test06 verified no-PD USB role controller
+ConditionKernelVersion=7.1.0-rc1-sdm845-polaris-test06
+Requires=polaris-charger-test05.service
+After=polaris-charger-test05.service
+Before=greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/modprobe qcom_usb_vbus_regulator
+ExecStart=/sbin/modprobe qcom_pmic_typec_smb2 source_otg_ready=1
+ExecStop=/sbin/rmmod qcom_pmic_typec_smb2
+RemainAfterExit=yes
+TimeoutStartSec=20s
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=multi-user.target

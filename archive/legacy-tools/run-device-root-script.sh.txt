@@ -1,0 +1,34 @@
+#!/bin/bash
+# Upload a reviewed project script and run once through an interactive SSH PTY.
+# Authentication goes directly to SSH/sudo; it is excluded from the saved log.
+set -euo pipefail
+project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+script=$(realpath -- "${1:?Specify a reviewed local script}")
+tag=${2:?Specify a unique log tag}
+[[ "$script" == "$project/tools/"*.sh && "$tag" =~ ^[a-z0-9-]+$ ]] || exit 2
+remote="/tmp/polaris-$tag.sh"
+transport=${3:-usb}
+case "$transport" in
+    usb) address=172.16.42.1; socket="$project/build/ssh/control" ;;
+    wifi)
+        address=$(cat "$project/build/ssh/wifi-address")
+        python3 -B - "$address" <<'PY'
+import ipaddress,sys
+a=ipaddress.IPv4Address(sys.argv[1])
+if not a.is_private or a.is_loopback or a.is_link_local or a in ipaddress.ip_network('172.16.0.0/16'):
+    raise SystemExit('Expected the phone private LAN address.')
+PY
+        socket="$project/build/ssh/wifi-control" ;;
+    *) echo 'Choose usb or wifi transport.' >&2; exit 2 ;;
+esac
+options=(-F /dev/null -S "$socket"
+    -o StrictHostKeyChecking=yes
+    -o HostKeyAlias=172.16.42.1
+    -o UserKnownHostsFile=<用户目录>/.ssh/known_hosts
+    -o ConnectTimeout=5)
+ssh "${options[@]}" -o BatchMode=yes "user@$address" \
+    "umask 077; set -C; cat > $remote" < "$script"
+ssh "${options[@]}" -tt "user@$address" \
+    "sudo -- sh -eu -c 'printf \"\\nPOLARIS_DMESG_BEGIN\\n\"; exec sh $remote'" \
+    | python3 -B -u "$project/tools/redact-log.py" --auth-until-marker \
+    | tee "$project/logs/$tag.log"

@@ -1,0 +1,50 @@
+Subject: [EXPERIMENT] msm: dsi: log 10nm PLL and PHY power ordering
+
+Diagnostic-only local patch against sdm845-7.1-rc1-r0.
+Record CTRL_0 before/after bias enable, requested VCO rate, lock result and
+entry to the normal PHY enable path. Register writes and delays unchanged.
+Test on polaris; remove diagnostic logging after root-cause verification.
+
+---
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_10nm.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_10nm.c
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_10nm.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_10nm.c
+@@ -337,10 +337,17 @@
+ 	struct dsi_pll_10nm *pll_10nm = to_pll_10nm(hw);
+ 	struct device *dev = &pll_10nm->phy->pdev->dev;
+ 	int rc;
+-
++	u32 ctrl0_before;
++
++	ctrl0_before = readl(pll_10nm->phy->base + REG_DSI_10nm_PHY_CMN_CTRL_0);
+ 	dsi_pll_enable_pll_bias(pll_10nm);
+ 	if (pll_10nm->slave)
+ 		dsi_pll_enable_pll_bias(pll_10nm->slave);
++
++	dev_info(dev, "polaris-test01: PLL%d prepare ctrl0=%#x->%#x rate=%llu\n",
++		 pll_10nm->phy->id, ctrl0_before,
++		 readl(pll_10nm->phy->base + REG_DSI_10nm_PHY_CMN_CTRL_0),
++		 pll_10nm->vco_current_rate);
+ 
+ 	rc = dsi_pll_10nm_vco_set_rate(hw,pll_10nm->vco_current_rate, 0);
+ 	if (rc) {
+@@ -359,6 +366,9 @@
+ 
+ 	/* Check for PLL lock */
+ 	rc = dsi_pll_10nm_lock_status(pll_10nm);
++	dev_info(dev, "polaris-test01: PLL%d lock rc=%d ctrl0=%#x\n",
++		 pll_10nm->phy->id, rc,
++		 readl(pll_10nm->phy->base + REG_DSI_10nm_PHY_CMN_CTRL_0));
+ 	if (rc) {
+ 		DRM_DEV_ERROR(dev, "PLL(%d) lock failed\n", pll_10nm->phy->id);
+ 		goto error;
+@@ -800,6 +810,9 @@
+ 	u32 data;
+ 
+ 	DBG("");
++
++	dev_info(&phy->pdev->dev, "polaris-test01: PHY%d enable ctrl0=%#x\n",
++		 phy->id, readl(base + REG_DSI_10nm_PHY_CMN_CTRL_0));
+ 
+ 	if (msm_dsi_dphy_timing_calc_v3(timing, clk_req)) {
+ 		DRM_DEV_ERROR(&phy->pdev->dev,

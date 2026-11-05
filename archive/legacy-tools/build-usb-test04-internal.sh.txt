@@ -1,0 +1,23 @@
+#!/bin/sh
+# Independent test04 kernel/modules; do not change the tested test01/02 tree.
+set -eu
+cd /mnt/project/build/recipe-test04
+export CARCH=aarch64 JOBS=12 MAKEFLAGS=-j12
+export SRCDEST=/mnt/project/build/distfiles REPODEST=/mnt/project/build/packages
+abuild -F verify
+cd src/linux-sdm845-7.1-rc1-r0
+make ARCH=arm64 LLVM=1 olddefconfig
+grep -q '^CONFIG_TYPEC_QCOM_PMIC_SMB2=m$' .config
+grep -q '^CONFIG_LOCALVERSION="-sdm845-polaris-test04"$' .config
+make -j4 ARCH=arm64 LLVM=1 qcom/sdm845-xiaomi-polaris.dtb
+# Generate an encrypted key. Its random passphrase lives only in this process.
+export KBUILD_SIGN_PIN=$(openssl rand -hex 32)
+openssl req -new -x509 -newkey rsa:4096 -sha512 -days 365 \
+    -passout env:KBUILD_SIGN_PIN -subj '/CN=Polaris test04 module signing/' \
+    -keyout certs/polaris-test-signing-key.pem \
+    -out certs/polaris-test-signing-key.pem
+chmod 600 certs/polaris-test-signing-key.pem
+cd ../..
+abuild -F build
+abuild -F package
+printf '\nIndependent test04 kernel/modules built and staged; no device deployment.\n'

@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C PAGER=cat SYSTEMD_PAGER=cat
+test "$(uname -r)" = 7.1.0-rc1-sdm845-polaris-test06
+printf 'Current role:\n'; cat /sys/class/usb_role/a600000.usb-role-switch/role
+printf '\nRecent Type-C orientation/attachment evidence:\n'
+for f in /sys/kernel/debug/usb/tcpm-*/log; do
+ test ! -r "$f" || tail -100 "$f"
+done
+printf '\nRecent external USB re-enumeration:\n'
+dmesg | grep -E 'USB disconnect|New USB device found|PMI8998 boost' | tail -25
